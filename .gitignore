@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+data/
+checkpoint.pt
+vector_store.pkl
+kb_index.pkl
+kb_index.faiss
+documents/
+results_*.txt
+.streamlit/

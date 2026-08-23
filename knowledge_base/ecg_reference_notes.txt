@@ -1,0 +1,124 @@
+ECG INTERPRETATION REFERENCE NOTES
+(Original summary material written for the CardioAgent knowledge base.
+Covers general electrocardiography concepts and the five PTB-XL
+diagnostic superclasses. This is educational reference material for a
+research prototype, not clinical guidance.)
+
+SECTION 1: BASIC ECG WAVEFORM COMPONENTS
+
+The electrocardiogram records the heart's electrical activity as a
+sequence of repeating waveforms. The P wave marks depolarization of the
+atria, the heart's upper chambers, and normally appears as a small,
+rounded deflection preceding each heartbeat. The QRS complex follows and
+represents depolarization of the ventricles, the heart's larger lower
+chambers; it is usually the most prominent, sharpest feature of the
+waveform because ventricular muscle mass is much greater than atrial
+muscle mass. The ST segment is the flat portion between the end of the
+QRS complex and the start of the T wave, representing the period when the
+ventricles are fully depolarized; its position relative to the baseline
+is closely examined because deviations can indicate reduced blood supply
+to heart muscle. The T wave represents ventricular repolarization, the
+electrical recovery phase after each contraction.
+
+The PR interval, measured from the start of the P wave to the start of
+the QRS complex, reflects how long it takes electrical activity to travel
+from the atria through the AV node to the ventricles. The QT interval,
+measured from the start of the QRS complex to the end of the T wave,
+reflects the total duration of ventricular electrical activity and is
+sensitive to heart rate, medications, and electrolyte levels.
+
+Heart rate variability, or the beat-to-beat variation in timing between
+consecutive heartbeats, is influenced by the autonomic nervous system and
+can be reduced in various cardiac and non-cardiac conditions, though low
+variability alone is not diagnostic of any single condition.
+
+SECTION 2: NORMAL ECG (NORM)
+
+A normal ECG typically originates from the heart's natural pacemaker, the
+sinus node, producing a regular rhythm with evenly spaced beats. Each P
+wave is followed by a QRS complex at a consistent, expected interval, and
+the overall waveform shape remains stable from one beat to the next. The
+ST segment sits at the same level as the baseline between beats, without
+significant elevation or depression, and the T wave points in the
+expected direction relative to the QRS complex. A normal ECG does not by
+itself rule out all forms of heart disease, since some conditions produce
+symptoms without any resting ECG abnormality, but it is a reassuring
+baseline finding in the absence of other concerning clinical signs.
+
+SECTION 3: MYOCARDIAL INFARCTION (MI)
+
+Myocardial infarction occurs when blood flow to a portion of heart muscle
+is significantly reduced or blocked, typically due to a blockage in a
+coronary artery, leading to tissue damage if not promptly treated. On the
+ECG, acute myocardial infarction can produce ST-segment elevation in the
+leads corresponding to the affected region of the heart, since different
+ECG leads are positioned to reflect electrical activity from different
+anatomical areas. In other cases, particularly with less severe or
+non-blockage-related reductions in blood flow, ST-segment depression or
+T-wave inversion may be seen instead of elevation. Over hours to days,
+if the affected tissue is damaged extensively enough, pathological Q
+waves may develop and can persist long-term as a marker of prior
+infarction. Because ECG changes evolve over time, a single ECG capturing
+one moment does not always show the full pattern, and comparison with
+prior or follow-up ECGs, along with blood tests for cardiac injury
+markers, is typically part of a full clinical evaluation.
+
+SECTION 4: ST/T-WAVE CHANGE (STTC)
+
+ST/T-wave changes refer to abnormalities in the ST segment or T wave that
+do not, on their own, necessarily indicate an acute infarction. Such
+changes can arise from reduced blood flow that falls short of causing
+tissue damage (ischemia without infarction), electrolyte imbalances such
+as abnormal potassium or calcium levels, certain medications including
+some antiarrhythmic and psychiatric drugs, or other systemic conditions
+affecting the heart's electrical recovery phase. Because these changes
+are frequently nonspecific, meaning they can arise from multiple
+different underlying causes, they are generally interpreted together with
+a patient's symptoms, history, and other test results rather than in
+isolation.
+
+SECTION 5: CONDUCTION DISTURBANCE (CD)
+
+Conduction disturbances involve delays or interruptions in how electrical
+signals travel through the heart's specialized conduction pathways. These
+pathways include the AV node, which relays signals from the atria to the
+ventricles, and the bundle branches, which distribute the signal
+throughout the ventricular muscle. A delay or block at the AV node can
+lengthen the PR interval or, in more severe cases, cause some or all
+atrial signals to fail to reach the ventricles. A block in one of the
+bundle branches typically widens the QRS complex and changes its shape,
+because the affected side of the heart must be activated through a slower,
+indirect electrical pathway instead of the normal fast conduction system.
+Some conduction disturbances are incidental findings with little clinical
+significance, while others can affect heart rhythm and function
+significantly, so clinical context again plays a large role in
+interpretation.
+
+SECTION 6: HYPERTROPHY (HYP)
+
+Hypertrophy refers to thickening of heart muscle tissue, most often
+affecting the walls of the ventricles. It commonly develops as an
+adaptive response to conditions that increase the workload on the heart
+over time, such as long-standing high blood pressure or certain valve
+abnormalities. Because a thicker muscle wall generates more electrical
+voltage during depolarization, hypertrophy is often inferred on the ECG
+from increased QRS amplitude in specific lead combinations, along with
+possible changes in the heart's overall electrical axis and secondary
+ST/T-wave changes. ECG-based criteria for hypertrophy are useful
+screening indicators but are considered less precise than direct imaging
+methods such as echocardiography, which can measure wall thickness
+directly.
+
+SECTION 7: GENERAL PRINCIPLES FOR INTERPRETING AUTOMATED ECG ANALYSIS
+
+Automated ECG analysis systems, including machine learning models,
+identify statistical patterns in waveform data associated with particular
+labels during training. A model's prediction reflects patterns it learned
+from its training data and does not constitute an independent clinical
+judgment. Model outputs are most usefully understood as one input among
+several that a clinician would weigh, alongside patient history, symptoms,
+physical examination findings, and other diagnostic tests, rather than as
+a stand-alone diagnostic conclusion. This is particularly important for
+research prototypes evaluated on a limited dataset and patient population,
+where performance on other populations, equipment, or clinical settings
+has not been established.

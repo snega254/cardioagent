@@ -1,0 +1,35 @@
+{
+  "NORM": [
+    "A normal ECG typically shows a regular rhythm originating from the sinus node, with consistent, evenly spaced P waves each followed by a QRS complex, a PR interval within the expected range, and no significant ST-segment or T-wave abnormalities.",
+    "In a normal resting ECG, heart rate is usually within a typical adult range, and the overall waveform shape is consistent from beat to beat."
+  ],
+  "MI": [
+    "Myocardial infarction (heart attack) can produce characteristic ECG changes such as ST-segment elevation or depression, and the later development of pathological Q waves, reflecting reduced blood flow and damage to heart muscle tissue.",
+    "The specific ECG leads showing abnormal changes can suggest which region of the heart is affected, since different leads correspond to different anatomical areas of the heart.",
+    "Changes localized to the anterior chest leads are generally associated with the front wall of the heart, while changes concentrated in the inferior leads are generally associated with the bottom wall - this lead-to-region mapping is a general anatomical convention, not a certainty for any individual case."
+  ],
+  "STTC": [
+    "ST/T-wave changes (STTC) refer to abnormalities in the ST segment or T wave that do not necessarily indicate an acute infarction but can reflect ischemia, electrolyte imbalance, medication effects, or other underlying conditions affecting the heart's repolarization.",
+    "These changes are often nonspecific on their own and are usually interpreted alongside a patient's symptoms and clinical history."
+  ],
+  "CD": [
+    "Conduction disturbances (CD) involve abnormalities in how the heart's electrical signal travels through its conduction pathways, which can include delays or blocks at various points such as the AV node or the bundle branches.",
+    "These often appear on the ECG as widened or abnormally shaped QRS complexes, or as changes in the timing relationship between the P wave and QRS complex.",
+    "Bundle branch blocks specifically involve a delay or interruption in one of the two main ventricular conduction pathways, typically producing a widened QRS complex with a characteristic notched or slurred shape."
+  ],
+  "HYP": [
+    "Hypertrophy (HYP) refers to thickening of the heart muscle, often due to conditions like long-standing high blood pressure, and can produce characteristic changes in QRS amplitude and axis on the ECG.",
+    "Chamber enlargement or hypertrophy is usually inferred indirectly from ECG voltage and axis criteria, and is typically confirmed with additional imaging such as echocardiography.",
+    "Left ventricular hypertrophy is often suggested by unusually high QRS voltage in certain lead combinations, though voltage-based criteria are known to have limited accuracy on their own."
+  ],
+  "GLOSSARY": [
+    "The P wave represents electrical activation (depolarization) of the atria, the heart's upper chambers.",
+    "The QRS complex represents electrical activation of the ventricles, the heart's lower chambers, and is usually the most prominent feature of an ECG waveform.",
+    "The ST segment represents the period between ventricular depolarization and repolarization, and its shape is closely watched for signs of ischemia or infarction.",
+    "The T wave represents ventricular repolarization, the electrical 'reset' of the ventricles after each heartbeat.",
+    "RR interval variability refers to how much the timing between consecutive heartbeats changes over time, which can reflect autonomic nervous system activity or underlying rhythm irregularities.",
+    "Sinus rhythm refers to a heartbeat that originates normally from the heart's natural pacemaker, the sinus node, as opposed to an abnormal or ectopic site.",
+    "Tachycardia refers to a heart rate faster than the typical resting range, while bradycardia refers to a heart rate slower than the typical resting range; both can be normal in certain contexts or a sign of an underlying issue.",
+    "Atrial fibrillation is a common irregular heart rhythm in which the atria beat chaotically rather than in a coordinated way, often appearing on an ECG as an irregularly irregular rhythm without clear, consistent P waves."
+  ]
+}
