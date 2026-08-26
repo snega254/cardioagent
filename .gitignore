@@ -8,4 +8,7 @@ kb_index.pkl
 kb_index.faiss
 documents/
 results_*.txt
-.streamlit/
+cardioagent.db
+.streamlit/secrets.toml
+ecg_files/
+reports/

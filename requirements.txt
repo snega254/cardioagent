@@ -8,3 +8,9 @@ faiss-cpu
 pypdf
 sentence-transformers
 streamlit
+bcrypt
+neurokit2
+pymongo
+dnspython
+reportlab
+google-genai

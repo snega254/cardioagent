@@ -22,6 +22,13 @@
     "Chamber enlargement or hypertrophy is usually inferred indirectly from ECG voltage and axis criteria, and is typically confirmed with additional imaging such as echocardiography.",
     "Left ventricular hypertrophy is often suggested by unusually high QRS voltage in certain lead combinations, though voltage-based criteria are known to have limited accuracy on their own."
   ],
+  "GUIDELINES": [
+    "Acute coronary syndrome pathways generally call for rapid reperfusion when ST-segment elevation is seen in two or more contiguous leads, with a strong emphasis on minimizing the time between presentation and treatment.",
+    "Nitrate-class medications are generally avoided when systolic blood pressure is low, when right ventricular infarction is suspected or unexcluded, or when a patient has recently taken a PDE-5 inhibitor, because the combination can cause a severe, difficult-to-reverse drop in blood pressure.",
+    "Inferior-wall myocardial infarction (implicating leads II, III, and aVF) carries a specific risk of concurrent right ventricular involvement, which is why right-sided leads are often recorded before certain medications are given in this scenario.",
+    "Beta-blocker medications are generally used cautiously or avoided in patients who are already hypotensive or significantly bradycardic, since these medications can further reduce heart rate and blood pressure.",
+    "Clinical decision-support recommendations in emergency cardiac care are intended to assist, not replace, the judgment of the treating clinician, who integrates additional context such as physical exam findings and real-time patient response."
+  ],
   "GLOSSARY": [
     "The P wave represents electrical activation (depolarization) of the atria, the heart's upper chambers.",
     "The QRS complex represents electrical activation of the ventricles, the heart's lower chambers, and is usually the most prominent feature of an ECG waveform.",
