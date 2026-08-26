@@ -1,25 +1,7 @@
 """
-CardioAgent response generator.
-
-Uses Gemini to turn CardioAgent's structured pipeline output (ECGConvNet
-prediction, Grad-CAM region, heart rate/R-peaks, RAG evidence) into a
-plain-language explanation.
-
-The LLM does NOT diagnose the ECG. It only explains results that were
-already produced upstream by the trained model, Grad-CAM, the heart-rate
-algorithm, and RAG retrieval. The prompt explicitly forbids inventing
-findings, and every value passed into it comes from the actual pipeline,
-never hardcoded or guessed.
-
-IMPORTANT LIMITATION (state this plainly, don't hide it): this module
-requires a real Gemini API key and network access to Google's API, which
-could not be tested in the environment this was written in (no network
-route to generativelanguage.googleapis.com from that sandbox). The prompt
-construction and error-handling logic were verified directly; the actual
-API call was not.
+CardioAgent response generator with severity assessment and medication considerations.
 """
 import os
-
 import streamlit as st
 from google import genai
 
@@ -31,10 +13,6 @@ CLASS_FULL_NAMES = {
     "HYP": "Hypertrophy (possible)",
 }
 
-# Short, friendly phrasing for the main UI headline — rephrasing of the
-# same categories above, not a new claim. Kept separate from
-# CLASS_FULL_NAMES so the technical name and the friendly phrasing can
-# each be edited independently.
 FRIENDLY_DESCRIPTIONS = {
     "NORM": "a normal ECG pattern",
     "MI": "a pattern associated with possible myocardial infarction",
@@ -43,7 +21,40 @@ FRIENDLY_DESCRIPTIONS = {
     "HYP": "a pattern associated with possible hypertrophy",
 }
 
+SEVERITY_LEVELS = {
+    "NORM": "Low concern",
+    "STTC": "Moderate concern",
+    "CD": "Moderate concern",
+    "HYP": "Moderate concern",
+    "MI": "High concern",
+}
+
+SEVERITY_DESCRIPTIONS = {
+    "Low concern": "Routine clinical review is appropriate.",
+    "Moderate concern": "Clinical review should be prioritized.",
+    "High concern": "Prompt clinical evaluation is recommended.",
+    "Urgent review": "Urgent clinical evaluation is strongly recommended.",
+    "Emergency review": "Emergency evaluation is recommended. Seek immediate care.",
+}
+
 GEMINI_MODEL = "gemini-3.6-flash"
+
+SAFETY_RULES = """
+IMPORTANT SAFETY RULES:
+- The ECGConvNet model produced a pattern prediction. You did NOT directly analyze the raw ECG waveform.
+- Do NOT claim you personally detected ECG waves, ST segments, QRS morphology, or other clinical findings 
+  unless those findings are explicitly provided in the input below.
+- Do NOT convert model confidence into a guaranteed diagnosis.
+- Do NOT invent symptoms, patient history, measurements, or clinical findings.
+- Do NOT claim Grad-CAM proves a specific ECG wave or interval is abnormal — Grad-CAM shows which
+  part of the signal the model weighted most; it does not by itself identify a clinical feature.
+- Use the retrieved medical evidence as supporting context. If evidence is insufficient, say so.
+- Do not recommend medication or treatment as an autonomous prescription.
+- Do not tell the user they definitely have a disease.
+- State plainly that this is a research prototype and professional clinical interpretation is required.
+- If the user reports emergency symptoms (chest pain, shortness of breath, severe dizziness, etc.), 
+  clearly instruct them to seek immediate emergency care.
+""".strip()
 
 
 def get_api_key():
@@ -56,8 +67,7 @@ def get_api_key():
     key = os.getenv("GEMINI_API_KEY")
     if not key:
         raise RuntimeError(
-            "GEMINI_API_KEY is not set. Add it to .streamlit/secrets.toml:\n"
-            'GEMINI_API_KEY = "your-api-key"'
+            "GEMINI_API_KEY is not set. Add it to .streamlit/secrets.toml"
         )
     return key
 
@@ -67,70 +77,163 @@ def get_client():
     return genai.Client(api_key=get_api_key())
 
 
-def _format_evidence(retrieved_passages):
-    if not retrieved_passages:
-        return "No relevant medical evidence was retrieved from the knowledge base."
-    parts = []
-    for i, (source, text, score) in enumerate(retrieved_passages, start=1):
-        parts.append(f"Evidence {i}\nSource: {source}\nSimilarity score: {score:.3f}\n\n{text}")
-    return "\n\n".join(parts)
+def get_severity(predicted_class, symptoms=None, heart_rate=None):
+    """Determine severity based on prediction and available clinical context."""
+    base_severity = SEVERITY_LEVELS.get(predicted_class, "Moderate concern")
+    
+    # Adjust severity based on symptoms
+    if symptoms:
+        symptom_text = symptoms.lower() if isinstance(symptoms, str) else ""
+        emergency_symptoms = ["chest pain", "shortness of breath", "severe dizziness", 
+                             "fainting", "loss of consciousness", "palpitations", "sweating"]
+        for es in emergency_symptoms:
+            if es in symptom_text:
+                if base_severity == "Low concern":
+                    return "Moderate concern"
+                elif base_severity == "Moderate concern":
+                    return "High concern"
+                elif base_severity == "High concern":
+                    return "Urgent review"
+    
+    # Adjust based on heart rate extremes
+    if heart_rate:
+        if heart_rate > 150 or heart_rate < 30:
+            if base_severity != "Low concern":
+                return "Urgent review"
+    
+    return base_severity
 
 
-SAFETY_RULES = """
-IMPORTANT:
-- The ECGConvNet model produced the prediction. You did NOT directly analyze the raw ECG waveform.
-- Do NOT claim you personally detected ECG waves, ST segments, QRS morphology, P waves, or other
-  clinical findings unless those findings are explicitly provided in the input below.
-- Do NOT convert model confidence into a guaranteed diagnosis.
-- Do NOT invent symptoms, patient history, measurements, or clinical findings.
-- Do NOT claim Grad-CAM proves a specific ECG wave or interval is abnormal — Grad-CAM shows which
-  part of the signal the model weighted most; it does not by itself identify a clinical feature.
-- Use the retrieved medical evidence as supporting context. If evidence is insufficient, say so.
-- Do not recommend medication or treatment.
-- Do not tell the user they definitely have a disease.
-- State plainly that this is a research prototype and professional clinical interpretation is required.
-""".strip()
-
-
-def build_prompt(predicted_class, confidence, region_start_sec, region_end_sec,
-                  retrieved_passages, heart_rate=None, n_rpeaks=None):
+def build_explanation_prompt(predicted_class, confidence, features, xai, 
+                              retrieved_passages, severity, patient_info,
+                              measurements):
     full_name = CLASS_FULL_NAMES.get(predicted_class, predicted_class)
-    evidence_text = _format_evidence(retrieved_passages)
-    hr_text = f"{heart_rate:.1f} beats per minute" if heart_rate is not None else "Not available"
-    rpeak_text = str(n_rpeaks) if n_rpeaks is not None else "Not available"
-
+    friendly = FRIENDLY_DESCRIPTIONS.get(predicted_class, "an ECG pattern")
+    
+    severity_desc = SEVERITY_DESCRIPTIONS.get(severity, "")
+    
+    evidence_text = ""
+    if retrieved_passages:
+        evidence_text = "\n".join(
+            f"- {text[:500]}..." for _, text, _ in retrieved_passages[:3]
+        )
+    else:
+        evidence_text = "No specific evidence retrieved."
+    
+    hr = features.get("heart_rate", "Not available")
+    n_rpeaks = features.get("n_rpeaks", "Not available")
+    start_sec = xai.get("region_start_sec", 0)
+    end_sec = xai.get("region_end_sec", 0)
+    
+    # Include extended measurements if available
+    measurement_text = ""
+    if measurements:
+        measurement_text = f"""
+Extended ECG Measurements:
+- Heart Rate: {measurements.get('heart_rate', 'N/A')} bpm
+- RR Variability: {measurements.get('rr_variability', 'N/A')}
+- Rhythm Regularity: {measurements.get('rhythm_regularity', 'N/A')}
+- PR Interval: {measurements.get('pr_interval', 'N/A')} ms
+- QRS Duration: {measurements.get('qrs_duration', 'N/A')} ms
+- QT Interval: {measurements.get('qt_interval', 'N/A')} ms
+- QTc Interval: {measurements.get('qtc_interval', 'N/A')} ms
+"""
+    
+    patient_text = ""
+    if patient_info:
+        patient_text = f"""
+Patient Information:
+- Age: {patient_info.get('age', 'Not provided')}
+- Sex: {patient_info.get('sex', 'Not provided')}
+- Symptoms: {patient_info.get('symptoms', 'Not provided')}
+- Reason for ECG: {patient_info.get('reason', 'Not provided')}
+- Clinical History: {patient_info.get('history', 'Not provided')}
+"""
+    
     return f"""
-You are the explanation assistant inside CardioAgent, an AI-assisted ECG research prototype.
-Your job is to explain the output of an ECG machine-learning pipeline clearly and cautiously.
+You are CardioAgent, an AI-powered explainable conversational ECG clinical decision-support assistant.
 
 {SAFETY_RULES}
 
-The system output is:
+The system has analyzed an ECG recording and produced the following results:
 
-Predicted ECG category: {full_name}
-Internal model class: {predicted_class}
-Calibrated model confidence: {confidence*100:.1f}%
-Heart rate: {hr_text}
-Number of detected R-peaks: {rpeak_text}
-Grad-CAM important region: approximately {region_start_sec:.2f}s to {region_end_sec:.2f}s
+PREDICTION: {full_name}
+PATTERN: {friendly}
+MODEL CONFIDENCE: {confidence*100:.1f}%
+SEVERITY ASSESSMENT: {severity}
+{severity_desc}
 
-Medical evidence retrieved from the CardioAgent knowledge base:
+ECG FEATURES:
+- Heart Rate: {hr} bpm
+- R-peaks detected: {n_rpeaks}
+- Grad-CAM important region: {start_sec:.2f}s to {end_sec:.2f}s
+
+{measurement_text}
+
+{patient_text}
+
+MEDICAL EVIDENCE RETRIEVED:
 {evidence_text}
 
-Generate a clear explanation using this structure:
-1. RESULT — briefly state what category the model predicted.
-2. WHAT THE MODEL FOUND — explain the prediction and confidence; make clear confidence is not a
-   confirmed probability of disease.
-3. ECG MEASUREMENTS — mention available heart rate / R-peak info; do not invent measurements.
-4. IMPORTANT SIGNAL REGION — explain that Grad-CAM identified this time region as influential; do
-   not claim it corresponds to a specific wave/abnormality unless the evidence explicitly says so.
-5. MEDICAL CONTEXT — use the retrieved evidence to explain what the predicted category generally means.
-6. WHAT TO DO NEXT — safe, general guidance (review with a healthcare professional, compare with
-   previous ECGs if appropriate, consider symptoms/history). No medication or treatment advice.
-7. LIMITATIONS — this is an AI research prototype, predictions require validation, Grad-CAM shows
-   attribution not diagnosis, RAG evidence is contextual, professional interpretation is required.
+Generate a clinical decision-support explanation using this structure:
 
-Keep it concise but useful. Use simple language suitable for a patient or project evaluator.
+## AI ECG Interpretation
+[Brief, plain-language statement of what the ECG pattern appears to be]
+
+## Severity / Clinical Priority
+[Explain the severity assessment and why it was assigned]
+
+## ECG Measurements
+[Summarize available measurements with clinical context]
+
+## Important Signal Region (Grad-CAM)
+[Explain what the highlighted region indicates without overclaiming]
+
+## Medical Context
+[Use retrieved evidence to explain the pattern's clinical significance]
+
+## Clinical Considerations
+[Specific items for clinician review]
+
+## Medication Considerations (For Physician Review)
+[Only if clinically indicated and supported by evidence. MUST state "Requires physician confirmation" for each item]
+
+## What to Discuss with Your Doctor
+[Safe, general guidance]
+
+## Limitations
+[Research prototype, requires clinical validation]
+
+Keep it concise but useful. Use clear medical language appropriate for clinicians. 
+Always distinguish between AI findings and clinical diagnosis.
+""".strip()
+
+
+def build_chatbot_prompt(analysis_context, chat_history, user_question):
+    """Build prompt for conversational chatbot."""
+    history_text = ""
+    if chat_history:
+        turns = [f"{'User' if h['role'] == 'user' else 'CardioAgent'}: {h['text']}"
+                 for h in chat_history[-5:]]  # Keep last 5 turns for context
+        history_text = "\n\nPrevious conversation:\n" + "\n".join(turns)
+    
+    return f"""
+You are CardioAgent, a conversational ECG clinical decision-support assistant.
+
+{SAFETY_RULES}
+
+Current analysis context:
+{analysis_context}
+
+{history_text}
+
+User's question: {user_question}
+
+Provide a helpful, clinically-oriented response. 
+- If the question asks about something not in the context, say "This wasn't measured by the system."
+- Keep responses concise but informative.
+- Use bullet points for clarity when appropriate.
+- Always include appropriate safety disclaimers.
 """.strip()
 
 
@@ -145,11 +248,194 @@ def generate_llm_response(prompt):
     return text.strip()
 
 
-def compose_response(predicted_class, confidence, region_start_sec, region_end_sec,
-                      retrieved_passages, heart_rate=None, n_rpeaks=None):
-    prompt = build_prompt(predicted_class, confidence, region_start_sec, region_end_sec,
-                           retrieved_passages, heart_rate, n_rpeaks)
+def compose_response(predicted_class, confidence, features, xai, retrieved_passages,
+                      patient_info=None, measurements=None):
+    severity = get_severity(
+        predicted_class,
+        patient_info.get("symptoms") if patient_info else None,
+        features.get("heart_rate")
+    )
+    
+    prompt = build_explanation_prompt(
+        predicted_class, confidence, features, xai, retrieved_passages,
+        severity, patient_info, measurements
+    )
+    
+    try:
+        response = generate_llm_response(prompt)
+        return response, severity
+    except Exception as e:
+        raise RuntimeError(f"Explanation generation failed: {e}")
+
+
+def generate_chat_response(analysis_context, chat_history, user_question):
+    prompt = build_chatbot_prompt(analysis_context, chat_history, user_question)
     try:
         return generate_llm_response(prompt)
     except Exception as e:
-        raise RuntimeError(f"Gemini explanation generation failed: {e}") from e
+        raise RuntimeError(f"Chat generation failed: {e}")
+
+
+# ============================================================
+# NEW: Clinical Reasoning Functions for Report Mode
+# ============================================================
+
+def build_clinical_reasoning_prompt(ecg_data, patient, guidelines, severity_level):
+    """
+    Build prompt for clinical reasoning from report data.
+    Used by clinical_report.py for evidence-grounded reasoning.
+    """
+    # Build measurement summary
+    measurements = []
+    
+    # Handle both dict and object inputs
+    if hasattr(ecg_data, 'to_dict'):
+        ecg_dict = ecg_data.to_dict()
+    elif isinstance(ecg_data, dict):
+        ecg_dict = ecg_data
+    else:
+        ecg_dict = {}
+    
+    # Build measurement list from available data
+    measurement_fields = {
+        'heart_rate': 'Heart Rate',
+        'pr_interval': 'PR Interval',
+        'qrs_duration': 'QRS Duration',
+        'qt_interval': 'QT Interval',
+        'qtc_interval': 'QTc Interval',
+        'rhythm': 'Rhythm',
+        'axis': 'Axis',
+        'st_segment': 'ST Segment',
+        't_wave': 'T Wave',
+        'p_wave': 'P Wave',
+        'bundle_branch': 'Bundle Branch',
+        'machine_interpretation': 'Machine Interpretation'
+    }
+    
+    for key, label in measurement_fields.items():
+        value = ecg_dict.get(key)
+        if value:
+            # Format units
+            if key in ['heart_rate']:
+                measurements.append(f"{label}: {value} bpm")
+            elif key in ['pr_interval', 'qrs_duration', 'qt_interval', 'qtc_interval']:
+                measurements.append(f"{label}: {value} ms")
+            else:
+                measurements.append(f"{label}: {value}")
+    
+    # Add abnormalities
+    abnormalities = ecg_dict.get('abnormalities', [])
+    if abnormalities:
+        measurements.append(f"Abnormalities: {', '.join(abnormalities)}")
+    
+    measurement_text = "\n".join(measurements) if measurements else "No measurements provided."
+    
+    # Build patient context
+    patient_text = ""
+    if patient:
+        if hasattr(patient, 'age') and patient.age:
+            patient_text += f"Age: {patient.age}\n"
+        if hasattr(patient, 'sex') and patient.sex:
+            patient_text += f"Sex: {patient.sex}\n"
+        if hasattr(patient, 'symptoms') and patient.symptoms:
+            patient_text += f"Symptoms: {patient.symptoms}\n"
+        if hasattr(patient, 'history') and patient.history:
+            patient_text += f"History: {patient.history}\n"
+        if hasattr(patient, 'vitals') and patient.vitals:
+            vitals_text = ", ".join(f"{k}: {v}" for k, v in patient.vitals.items())
+            patient_text += f"Vitals: {vitals_text}\n"
+    
+    # Build guidelines
+    guideline_text = ""
+    if guidelines:
+        for g in guidelines[:3]:
+            source = g.get('source', 'Unknown')
+            text = g.get('text', '')[:500]
+            guideline_text += f"\n- Source: {source}\n  {text}...\n"
+    else:
+        guideline_text = "No specific guidelines retrieved."
+    
+    # Build severity text
+    if isinstance(severity_level, dict):
+        severity_text = severity_level.get('level', 'routine review')
+        severity_evidence = "\n".join(f"- {e}" for e in severity_level.get('evidence', []))
+    else:
+        severity_text = str(severity_level)
+        severity_evidence = "Based on available measurements."
+    
+    return f"""
+You are CardioAgent, an explainable multimodal clinical decision-support assistant.
+
+CRITICAL RULES:
+- You must not invent information.
+- Use only the information provided below.
+- If information is missing, explicitly state that it is missing.
+- Do not present possible diagnoses as confirmed diagnoses.
+- Do not claim clinical validation.
+- Distinguish observed findings from model-derived findings.
+
+=== ECG MEASUREMENTS ===
+{measurement_text}
+
+=== PATIENT CONTEXT ===
+{patient_text}
+
+=== SEVERITY ASSESSMENT ===
+Level: {severity_text}
+
+Supporting evidence:
+{severity_evidence}
+
+=== RETRIEVED GUIDELINES ===
+{guideline_text}
+
+=== INSTRUCTIONS ===
+Generate a structured clinical decision-support response with these sections:
+
+1. **ECG Observations** - Summarize the key ECG findings from the available information.
+
+2. **Clinical Significance** - Explain what these findings may mean, in clinical terms. Use cautious language.
+
+3. **Risk / Triage Support** - Based on available evidence, provide a supported level such as:
+   - Routine review
+   - Prompt clinical review
+   - Urgent evaluation may be appropriate
+
+4. **Red Flags** - List any concerning findings supported by the available evidence.
+
+5. **Possible Considerations** - Use "Possible considerations include..." Never present as confirmed diagnoses.
+
+6. **Clinician Review** - What the clinician should specifically review. Mention missing information.
+
+7. **Questions / Missing Information** - What additional information would materially improve interpretation.
+
+8. **Explanation** - Detailed explanation of the reasoning in understandable language.
+
+9. **Evidence / Sources** - Identify the RAG evidence used where available.
+
+10. **Disclaimer** - This is decision-support software and does not replace professional medical evaluation.
+
+Keep responses clear, structured, and evidence-grounded.
+Do not invent findings not present in the data.
+Do not make definitive diagnoses.
+"""
+
+
+def generate_clinical_response(ecg_data, patient, guidelines, severity_level):
+    """
+    Generate clinical response using the clinical reasoning prompt.
+    
+    Args:
+        ecg_data: ECGReportData object or dict with measurements
+        patient: PatientContext object or dict with patient info
+        guidelines: List of retrieved guidelines
+        severity_level: String or dict with severity assessment
+    
+    Returns:
+        String containing the clinical reasoning response
+    """
+    prompt = build_clinical_reasoning_prompt(ecg_data, patient, guidelines, severity_level)
+    try:
+        return generate_llm_response(prompt)
+    except Exception as e:
+        raise RuntimeError(f"Clinical reasoning generation failed: {e}")

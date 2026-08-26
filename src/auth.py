@@ -1,12 +1,8 @@
 """
-Real password authentication using bcrypt (properly salted, properly
-hashed — not a toy comparison). Session persistence is via Streamlit's
-session_state, which lasts for the browser tab session but not across
-browser restarts — that's an honest, stated limitation, not a shortcut
-pretending to be full persistent-cookie auth.
+Email-based authentication using bcrypt (properly salted, properly hashed).
+Session persistence is via Streamlit's session_state.
 """
 import re
-
 import bcrypt
 
 
@@ -18,15 +14,23 @@ def verify_password(plain_password, password_hash):
     return bcrypt.checkpw(plain_password.encode("utf-8"), password_hash.encode("utf-8"))
 
 
-def validate_username(username):
-    if not username or len(username) < 3:
-        return False, "Username must be at least 3 characters."
-    if not re.match(r"^[a-zA-Z0-9_]+$", username):
-        return False, "Username can only contain letters, numbers, and underscores."
+def validate_email(email):
+    if not email or len(email) < 3:
+        return False, "Email must be at least 3 characters."
+    # Basic email validation
+    pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+    if not re.match(pattern, email):
+        return False, "Please enter a valid email address."
     return True, ""
 
 
 def validate_password(password):
     if not password or len(password) < 6:
         return False, "Password must be at least 6 characters."
+    return True, ""
+
+
+def validate_name(name):
+    if not name or len(name) < 2:
+        return False, "Name must be at least 2 characters."
     return True, ""

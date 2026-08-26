@@ -1,52 +1,241 @@
 """
-CardioAgent - full application with conversational, assistant-style UI.
-
-Run: streamlit run src/app.py
-
-Navigation: Dashboard / New Analysis / History / Compare / Knowledge Base
-The "Ask CardioAgent" chatbot lives embedded within the Analysis Result
-view (both right after running a new analysis, and when reopening a past
-report from History) rather than as a separate top-level page, since it
-needs a loaded analysis to answer about.
-
-Pipeline: ECG (.hea+.dat) -> validate -> preprocess -> ECGConvNet ->
-prediction -> Grad-CAM + heart rate -> RAG retrieval -> Gemini explanation
--> chatbot follow-ups -> MongoDB + PDF report.
+CardioAgent — Explainable Multimodal ECG Clinical Decision-Support Assistant
 """
+
 import os
 import uuid
-
 import torch
-
 import streamlit as st
 import auth
-from chat import SUGGESTED_QUESTIONS, ask_chatbot
 from db import CardioDB
-from document_processing import chunk_text, clean_text, extract_text
-from ecg_io import ECGLoadError, load_wfdb_pair, prepare_for_model, validate_signal
-from gradcam import grad_cam_1d, top_attributed_region
-from heart_rate import detect_heart_rate
-from ingest_documents import seed_default_kb
+
+# ECG imports
+from ecg_io import ECGLoadError, load_wfdb_pair, validate_signal, prepare_for_model
+from gradcam import grad_cam_1d, top_attributed_region, create_gradcam_visualization
+from heart_rate import detect_heart_rate, extract_ecg_measurements
 from model import ECGConvNet
 from preprocessing import SUPERCLASSES
 from rag import build_query, retrieve
 from report_pdf import generate_pdf_report
-from respond import CLASS_FULL_NAMES, FRIENDLY_DESCRIPTIONS, compose_response
-from triage import generate_triage_assessment
-from vector_store import VectorStore
+from respond import (
+    CLASS_FULL_NAMES, FRIENDLY_DESCRIPTIONS, compose_response, generate_chat_response
+)
+from clinical_report import ECGReportData, parse_report_text, clinical_report_pipeline
+from patient_context import PatientContext
+from report_parser import parse_pdf_file_object
+from patient_management import PatientManager, get_patient_display_name, format_symptoms
 
 CHECKPOINT = "checkpoint.pt"
 STORE_PATH = "vector_store.pkl"
 ECG_FILES_DIR = "ecg_files"
 REPORTS_DIR = "reports"
 
-st.set_page_config(page_title="CardioAgent", layout="wide", page_icon="\U00002764")
+st.set_page_config(
+    page_title="CardioAgent — ECG Clinical Decision Support",
+    page_icon="❤️",
+    layout="wide"
+)
+
+# ===== CSS THEME =====
+st.markdown("""
+<style>
+    /* Professional clinical theme */
+    .stApp {
+        font-size: 15px;
+        background-color: #f5f7fa;
+    }
+    
+    h1, h2, h3, h4, h5, h6 {
+        color: #1a2332;
+        font-weight: 600;
+    }
+    
+    .main-header {
+        color: #1a2332;
+        font-size: 28px;
+        font-weight: 700;
+        margin-bottom: 4px;
+    }
+    
+    .main-subheader {
+        color: #5a6a7a;
+        font-size: 15px;
+        margin-bottom: 20px;
+    }
+    
+    .card {
+        background: white;
+        border-radius: 12px;
+        padding: 20px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+        border: 1px solid #e8ecf0;
+        margin-bottom: 16px;
+    }
+    
+    .result-finding {
+        font-size: 20px;
+        font-weight: 600;
+        color: #1a2332;
+        padding: 12px 16px;
+        background: #f0f5ff;
+        border-radius: 8px;
+        border-left: 4px solid #2E6BA8;
+        margin: 8px 0;
+    }
+    
+    .severity-low { color: #28a745; }
+    .severity-moderate { color: #fd7e14; }
+    .severity-high { color: #dc3545; }
+    .severity-urgent { color: #8b0000; font-weight: bold; }
+    
+    .emergency-warning {
+        background: #fef3f2;
+        border-left: 4px solid #dc3545;
+        padding: 14px 18px;
+        border-radius: 8px;
+        margin: 12px 0;
+    }
+    
+    .patient-summary {
+        background: #f8f9fa;
+        border-radius: 8px;
+        padding: 14px 18px;
+        margin: 8px 0;
+        border: 1px solid #e8ecf0;
+    }
+    
+    .analysis-option {
+        padding: 24px;
+        border-radius: 12px;
+        border: 2px solid #e8ecf0;
+        background: white;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.2s;
+        min-height: 140px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+    }
+    
+    .analysis-option:hover {
+        border-color: #2E6BA8;
+        box-shadow: 0 4px 12px rgba(46, 107, 168, 0.1);
+    }
+    
+    .analysis-option .icon {
+        font-size: 36px;
+        margin-bottom: 8px;
+    }
+    
+    .analysis-option .title {
+        font-weight: 600;
+        font-size: 18px;
+        color: #1a2332;
+    }
+    
+    .analysis-option .desc {
+        color: #5a6a7a;
+        font-size: 13px;
+        margin-top: 4px;
+    }
+    
+    .compare-card {
+        background: white;
+        border-radius: 12px;
+        padding: 20px;
+        border: 1px solid #e8ecf0;
+        min-height: 200px;
+    }
+    
+    .compare-card .label {
+        color: #5a6a7a;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    
+    .compare-card .date {
+        color: #1a2332;
+        font-size: 15px;
+        font-weight: 500;
+    }
+    
+    .compare-card .result {
+        margin-top: 12px;
+        padding: 10px 14px;
+        background: #f8f9fa;
+        border-radius: 6px;
+        font-size: 14px;
+    }
+    
+    .change-summary {
+        background: #f0f5ff;
+        border-radius: 12px;
+        padding: 20px;
+        border: 1px solid #d0e0f0;
+        margin: 12px 0;
+    }
+    
+    .change-summary .title {
+        font-weight: 600;
+        font-size: 16px;
+        color: #1a2332;
+    }
+    
+    .stButton button {
+        font-size: 15px;
+        padding: 10px 24px;
+        border-radius: 8px;
+        font-weight: 500;
+    }
+    
+    .stButton button[kind="primary"] {
+        background-color: #2E6BA8;
+        color: white;
+    }
+    
+    .stButton button[kind="primary"]:hover {
+        background-color: #1a4f7a;
+    }
+    
+    .stSelectbox label, .stNumberInput label, .stTextInput label {
+        font-weight: 500;
+        color: #1a2332;
+    }
+    
+    .stExpander {
+        border: 1px solid #e8ecf0 !important;
+        border-radius: 8px !important;
+    }
+    
+    .stExpander summary {
+        font-weight: 500;
+        color: #1a2332;
+    }
+    
+    .sidebar .sidebar-content {
+        background-color: white;
+    }
+    
+    .stChatInput textarea {
+        font-size: 15px !important;
+        min-height: 45px !important;
+    }
+    
+    hr {
+        margin: 20px 0;
+        border-color: #e8ecf0;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 
+# ===== DATABASE =====
 @st.cache_resource
 def get_db():
     return CardioDB()
-
 
 try:
     cdb = get_db()
@@ -57,648 +246,1037 @@ except Exception as e:
 
 
 @st.cache_resource
+def get_patient_manager():
+    return PatientManager(cdb) if cdb else None
+
+patient_manager = get_patient_manager()
+
+
+@st.cache_resource
 def load_model():
     model = ECGConvNet()
-    ckpt = torch.load(CHECKPOINT, map_location="cpu")
-    model.load_state_dict(ckpt["model_state"])
-    model.log_temperature.data = ckpt["log_temperature"]
-    model.eval()
+    if os.path.exists(CHECKPOINT):
+        ckpt = torch.load(CHECKPOINT, map_location="cpu")
+        model.load_state_dict(ckpt["model_state"])
+        model.log_temperature.data = ckpt["log_temperature"]
+        model.eval()
     return model
 
 
-for key, default in [("user_id", None), ("username", None), ("name", None),
-                      ("age", None), ("sex", None), ("page", "Dashboard"),
-                      ("current_ecg", None), ("open_report_id", None),
-                      ("chat_histories", {})]:
+# ===== SESSION STATE =====
+for key, default in [
+    ("user_id", None),
+    ("email", None),
+    ("name", None),
+    ("page", "Dashboard"),
+    ("selected_patient_id", None),
+    ("selected_analysis_id", None),
+    ("analysis_type", None),
+    ("chat_histories", {}),
+    ("current_analysis", None),
+    ("current_signal", None),
+    ("current_fs", None),
+    ("current_lead_names", None),
+    ("current_ecg_data", None),
+    ("current_patient", None),
+    ("analysis_complete", False),
+    ("show_analysis_input", False),
+]:
     if key not in st.session_state:
         st.session_state[key] = default
 
 
-def do_login(username, password):
-    user = cdb.get_user_by_username(username)
+# ===== AUTHENTICATION =====
+def do_login(email, password):
+    user = cdb.get_user_by_email(email)
     if user is None:
-        return False, "No account with that username."
+        return False, "No account with that email address."
     if not auth.verify_password(password, user["password_hash"]):
         return False, "Incorrect password."
     st.session_state.user_id = user["id"]
-    st.session_state.username = user["username"]
+    st.session_state.email = user["email"]
     st.session_state.name = user["name"]
-    st.session_state.age = user["age"]
-    st.session_state.sex = user["sex"]
     return True, ""
 
 
-def do_register(username, password, name, age, sex):
-    ok, msg = auth.validate_username(username)
+def do_register(email, password, name):
+    ok, msg = auth.validate_email(email)
     if not ok:
         return False, msg
     ok, msg = auth.validate_password(password)
     if not ok:
         return False, msg
-    if cdb.get_user_by_username(username) is not None:
-        return False, "That username is already taken."
+    ok, msg = auth.validate_name(name)
+    if not ok:
+        return False, msg
+    if cdb.get_user_by_email(email) is not None:
+        return False, "That email is already registered."
     pw_hash = auth.hash_password(password)
-    cdb.create_user(username, pw_hash, name, age, sex)
+    cdb.create_user(email, pw_hash, name)
     return True, "Account created. Please log in."
 
 
-with st.sidebar:
-    st.markdown("## \U00002764 CardioAgent")
-    st.caption("AI-Assisted ECG Analysis")
-
-    if db_error:
-        st.error("Database not connected.")
-        with st.expander("Setup instructions"):
-            st.code(db_error)
-        st.stop()
-
-    if st.session_state.user_id is None:
-        login_tab, register_tab = st.tabs(["Log In", "Register"])
-        with login_tab:
-            u = st.text_input("Username", key="login_u")
-            p = st.text_input("Password", type="password", key="login_p")
-            if st.button("Log In", use_container_width=True):
-                ok, msg = do_login(u, p)
-                if ok:
-                    st.rerun()
-                else:
-                    st.error(msg)
-        with register_tab:
-            ru = st.text_input("Choose a username", key="reg_u")
-            rp = st.text_input("Choose a password", type="password", key="reg_p")
-            rname = st.text_input("Full name", key="reg_name")
-            rage = st.number_input("Age", min_value=0, max_value=120, value=30, key="reg_age")
-            rsex = st.selectbox("Sex", ["Prefer not to say", "Female", "Male", "Other"], key="reg_sex")
-            if st.button("Register", use_container_width=True):
-                ok, msg = do_register(ru, rp, rname, int(rage), rsex)
-                if ok:
-                    st.success(msg)
-                else:
-                    st.error(msg)
-        st.stop()
-    else:
-        st.success(f"**{st.session_state.name or st.session_state.username}**")
+# ===== SIDEBAR =====
+def render_sidebar():
+    with st.sidebar:
+        st.markdown("## ❤️ CardioAgent")
+        st.caption("ECG Clinical Decision Support")
+        
+        if db_error:
+            st.error("Database not connected.")
+            with st.expander("Setup"):
+                st.code(db_error)
+            st.stop()
+        
+        if st.session_state.user_id is None:
+            render_login()
+            return
+        
+        st.success(f"👤 {st.session_state.name}")
         st.divider()
-        nav_options = ["Dashboard", "New Analysis", "History", "Compare", "Knowledge Base"]
-        st.session_state.page = st.radio(
-            "Navigation", nav_options,
-            index=nav_options.index(st.session_state.page),
-            label_visibility="collapsed",
+        
+        # Navigation
+        nav = st.radio(
+            "Navigation",
+            ["Dashboard", "New Analysis", "History", "Compare"],
+            index=0,
+            label_visibility="collapsed"
         )
+        st.session_state.page = nav
+        
+        # Patient info if selected
+        if st.session_state.selected_patient_id:
+            patient = patient_manager.get_patient(st.session_state.selected_patient_id)
+            if patient:
+                st.divider()
+                st.caption("Current Patient")
+                st.write(f"**{patient.get('name', 'Unknown')}**")
+                st.write(f"{patient.get('age', 'N/A')} yrs · {patient.get('sex', 'N/A')}")
+                if patient.get('symptoms'):
+                    st.write(f"📋 {format_symptoms(patient.get('symptoms', []))}")
+        
         st.divider()
-        if st.button("Log Out", use_container_width=True):
-            for key in ["user_id", "username", "name", "age", "sex",
-                        "current_ecg", "open_report_id"]:
+        if st.button("🚪 Log Out", use_container_width=True):
+            for key in ["user_id", "email", "name", "selected_patient_id", 
+                        "selected_analysis_id", "analysis_type", "current_analysis",
+                        "current_signal", "current_fs", "current_lead_names",
+                        "current_ecg_data", "current_patient", "analysis_complete",
+                        "show_analysis_input"]:
                 st.session_state[key] = None
-            st.session_state.chat_histories = {}
             st.session_state.page = "Dashboard"
             st.rerun()
 
 
-def page_dashboard():
-    st.title("Dashboard")
-    st.caption(f"Welcome back, {st.session_state.name or st.session_state.username}.")
+def render_login():
+    login_tab, register_tab = st.tabs(["Log In", "Register"])
+    with login_tab:
+        email = st.text_input("Email", key="login_email")
+        password = st.text_input("Password", type="password", key="login_pass")
+        if st.button("Log In", use_container_width=True, type="primary"):
+            ok, msg = do_login(email, password)
+            if ok:
+                st.rerun()
+            else:
+                st.error(msg)
+    with register_tab:
+        reg_email = st.text_input("Email", key="reg_email")
+        reg_pass = st.text_input("Choose a password", type="password", key="reg_pass")
+        reg_name = st.text_input("Full name", key="reg_name")
+        if st.button("Register", use_container_width=True):
+            ok, msg = do_register(reg_email, reg_pass, reg_name)
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+    st.stop()
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("New ECG Analysis", use_container_width=True, type="primary"):
+
+# ===== PAGE: DASHBOARD =====
+def page_dashboard():
+    st.markdown('<div class="main-header">❤️ CardioAgent</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-subheader">Explainable ECG Clinical Decision Support</div>', unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("📋 New Analysis", use_container_width=True, type="primary"):
             st.session_state.page = "New Analysis"
             st.rerun()
-    with c2:
-        if st.button("Patient History", use_container_width=True):
+    with col2:
+        if st.button("📊 History", use_container_width=True):
             st.session_state.page = "History"
             st.rerun()
-    with c3:
-        if st.button("Knowledge Base", use_container_width=True):
-            st.session_state.page = "Knowledge Base"
+    with col3:
+        if st.button("📈 Compare", use_container_width=True):
+            st.session_state.page = "Compare"
             st.rerun()
-
+    
     st.divider()
-    st.subheader("Recent Analyses")
-    reports = cdb.get_reports_for_user(st.session_state.user_id)[:5]
-    if not reports:
-        st.info("No analyses yet. Start with 'New ECG Analysis' above.")
+    st.subheader("Recent Patients")
+    patients = patient_manager.get_patients_for_user(st.session_state.user_id)
+    
+    if not patients:
+        st.info("No patients yet. Start by creating a new patient in New Analysis.")
         return
-
-    for r in reports:
-        analysis = r["analysis"] or {}
-        ecg = r["ecg_record"] or {}
-        pred = analysis.get("prediction")
-        friendly = FRIENDLY_DESCRIPTIONS.get(pred, "an unrecognized pattern") if pred else "N/A"
+    
+    for patient in patients[:5]:
         with st.container(border=True):
-            cols = st.columns([2, 2, 3, 1])
-            cols[0].write(r["created_at"][:19].replace("T", " "))
-            cols[1].write(ecg.get("filename", "N/A"))
-            cols[2].write(friendly.capitalize())
-            if cols[3].button("View", key=f"view_{r['id']}"):
-                st.session_state.page = "History"
-                st.session_state.open_report_id = r["id"]
+            cols = st.columns([3, 2, 2, 1])
+            cols[0].write(f"**{patient.get('name', 'Unknown')}**")
+            cols[1].write(f"{patient.get('age', 'N/A')} yrs · {patient.get('sex', 'N/A')}")
+            cols[2].write(f"{len(patient.get('analyses', [])) or 0} analyses")
+            if cols[3].button("Select", key=f"select_{patient['id']}"):
+                st.session_state.selected_patient_id = patient["id"]
+                st.session_state.page = "New Analysis"
                 st.rerun()
 
 
-def render_chat(analysis, ecg_record, chat_key):
-    st.subheader("Ask CardioAgent")
-
-    if chat_key not in st.session_state.chat_histories:
-        st.session_state.chat_histories[chat_key] = []
-    history = st.session_state.chat_histories[chat_key]
-
-    for turn in history:
-        with st.chat_message("user" if turn["role"] == "user" else "assistant"):
-            st.write(turn["text"])
-
-    st.caption("Suggested questions:")
-    sq_cols = st.columns(3)
-    clicked_question = None
-    for i, q in enumerate(SUGGESTED_QUESTIONS):
-        if sq_cols[i % 3].button(q, key=f"{chat_key}_sq_{i}", use_container_width=True):
-            clicked_question = q
-
-    typed_question = st.chat_input("Ask a question about this ECG analysis...")
-    question = clicked_question or typed_question
-
-    if question:
-        history.append({"role": "user", "text": question})
-        with st.chat_message("user"):
-            st.write(question)
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                try:
-                    answer = ask_chatbot(analysis, ecg_record, history[:-1], question)
-                except Exception as e:
-                    answer = (f"I couldn't generate a response right now "
-                              f"({e}). The analysis data is still available above.")
-            st.write(answer)
-        history.append({"role": "assistant", "text": answer})
-
-
-def render_report_body(analysis, ecg_record, chat_key, show_chat=True):
-    pred = analysis.get("prediction")
-    friendly = FRIENDLY_DESCRIPTIONS.get(pred, "an unrecognized pattern") if pred else None
-
-    st.subheader("AI Interpretation")
-    if friendly:
-        st.markdown(f"> \"Patterns in this recording were most consistent with **{friendly}**.\"")
-    else:
-        st.caption("No prediction available.")
-
-    features = analysis.get("features") or {}
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Heart Rate", f"{features['heart_rate']:.0f} bpm" if features.get("heart_rate") else "N/A")
-    m2.metric("Leads", ecg_record.get("n_leads", "N/A"))
-    m3.metric("Duration", f"{ecg_record.get('duration_sec', 0):.0f} sec")
-
-    st.subheader("Why did the AI say this?")
-    xai = analysis.get("xai") or {}
-    if xai.get("region_start_sec") is not None:
-        st.write("The model placed stronger importance on a specific portion of the "
-                 "recording when making this prediction. This attribution shows what "
-                 "the model focused on — it does not by itself prove a specific ECG "
-                 "wave or interval is abnormal.")
-    else:
-        st.caption("No attribution information available.")
-
-    explanation = analysis.get("explanation")
-    st.subheader("CardioAgent Explanation")
-    if explanation:
-        st.write(explanation)
-    else:
-        st.warning("An explanation could not be generated for this analysis "
-                   "(the underlying prediction and measurements above are still valid).")
-
-    st.markdown(
-        "> **This is an AI research prototype, not a confirmed medical diagnosis.** "
-        "Professional clinical interpretation is required."
-    )
-
-    with st.expander("Technical details"):
-        conf = analysis.get("confidence")
-        rag_sources = analysis.get("rag_sources") or []
-        st.json({
-            "internal_class": pred,
-            "calibrated_confidence": f"{conf*100:.1f}%" if conf is not None else None,
-            "sampling_rate_hz": ecg_record.get("sampling_rate"),
-            "n_rpeaks": features.get("n_rpeaks"),
-            "region_start_sec": xai.get("region_start_sec"),
-            "region_end_sec": xai.get("region_end_sec"),
-            "retrieved_sources": [s.get("source") for s in rag_sources],
-            "retrieval_scores": [round(s.get("score", 0), 3) for s in rag_sources],
-        })
-
-    with st.expander("Clinical Triage Assessment (optional, for emergency/urgent-care context)"):
-        st.caption(
-            "This produces an emergency-triage-style assessment using patient "
-            "vitals, symptoms, and history you enter below, combined with this "
-            "ECG analysis. Every recommendation requires physician confirmation "
-            "before acting — this tool never issues autonomous orders."
-        )
-        tc1, tc2 = st.columns(2)
-        with tc1:
-            t_age = st.number_input("Patient age", min_value=0, max_value=120, value=50,
-                                     key=f"{chat_key}_t_age")
-            t_sex = st.selectbox("Sex", ["Male", "Female", "Other"], key=f"{chat_key}_t_sex")
-            t_history = st.text_input("Relevant history (comma-separated)",
-                                       key=f"{chat_key}_t_hist")
-            t_meds = st.text_input("Current medications (comma-separated)",
-                                    key=f"{chat_key}_t_meds")
-            t_pde5_hours = st.number_input("Hours since last PDE-5 inhibitor dose (if any, else leave 0)",
-                                            min_value=0, max_value=200, value=0,
-                                            key=f"{chat_key}_t_pde5")
-        with tc2:
-            t_complaint = st.text_input("Chief complaint", key=f"{chat_key}_t_complaint")
-            t_onset = st.text_input("Symptom onset", key=f"{chat_key}_t_onset")
-            t_pain = st.slider("Pain severity (1-10)", 1, 10, 5, key=f"{chat_key}_t_pain")
-            t_systolic = st.number_input("Systolic BP (mmHg)", min_value=0, max_value=300,
-                                          value=120, key=f"{chat_key}_t_sbp")
-            t_diastolic = st.number_input("Diastolic BP (mmHg)", min_value=0, max_value=200,
-                                           value=80, key=f"{chat_key}_t_dbp")
-            t_spo2 = st.number_input("SpO2 (%)", min_value=0, max_value=100, value=98,
-                                      key=f"{chat_key}_t_spo2")
-
-        if st.button("Generate Triage Assessment", key=f"{chat_key}_triage_btn"):
-            with st.spinner("Generating triage assessment..."):
-                patient = {
-                    "age": t_age, "sex": t_sex,
-                    "history": t_history or "None reported",
-                    "medications": [m.strip() for m in t_meds.split(",") if m.strip()],
-                    "hours_since_pde5_inhibitor": t_pde5_hours if t_pde5_hours > 0 else None,
-                }
-                symptoms = {
-                    "chief_complaint": t_complaint or "Not provided",
-                    "onset": t_onset or "Not provided",
-                    "pain_severity": t_pain,
-                    "associated": [],
-                }
-                vitals = {
-                    "bp": f"{t_systolic}/{t_diastolic}", "systolic_bp": t_systolic,
-                    "hr": features.get("heart_rate"), "spo2": t_spo2, "rr": None,
-                }
-                ecg_findings = {
-                    "predicted_class": pred, "confidence": analysis.get("confidence"),
-                    "heart_rate": features.get("heart_rate"),
-                    "gradcam_leads": None,  # not tracked per-lead by current Grad-CAM implementation
-                    "gradcam_window": (f"{xai.get('region_start_sec'):.2f}s-{xai.get('region_end_sec'):.2f}s"
-                                        if xai.get("region_start_sec") is not None else None),
-                }
-                rag_guidelines = []
-                if os.path.exists(STORE_PATH):
-                    raw = retrieve(f"{pred} contraindications guidelines", store_path=STORE_PATH, top_k=3)
-                    rag_guidelines = [{"source": s, "text": t} for s, t, sc in raw]
-
-                try:
-                    triage_text, flags = generate_triage_assessment(
-                        patient, symptoms, vitals, ecg_findings, rag_guidelines)
-                    st.markdown(triage_text)
-                    if flags.nitrate_contraindicated or flags.beta_blocker_caution:
-                        st.warning("Deterministic safety flags were raised — see Section 4 above.")
-                except Exception as e:
-                    st.error(f"Could not generate triage assessment: {e}")
-
-        st.caption(
-            "⚠️ Note: current Grad-CAM output identifies a time region, not "
-            "per-lead attribution — the 'affected leads' concept from the "
-            "original triage design isn't yet computed by this pipeline. "
-            "This is a real gap, not hidden here: extending Grad-CAM to "
-            "per-lead attribution would need a per-lead saliency method, "
-            "which isn't implemented yet."
-        )
-
-    if show_chat:
-        st.divider()
-        render_chat(analysis, ecg_record, chat_key)
-
-
+# ===== PAGE: NEW ANALYSIS (SIMPLIFIED) =====
 def page_new_analysis():
-    st.title("New ECG Analysis")
-
-    if not os.path.exists(CHECKPOINT):
-        st.error(f"No trained model found at '{CHECKPOINT}'. Run `python src/train.py` first.")
-        return
-
-    st.markdown("**Supported ECG format: WFDB (.hea + .dat)**")
-    st.caption("Upload the matching .hea and .dat files for one ECG recording.")
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        hea_file = st.file_uploader("Select .hea file", type=["hea"])
-    with col_b:
-        dat_file = st.file_uploader("Select matching .dat file", type=["dat"])
-
-    if not hea_file or not dat_file:
-        st.info("Select both files to continue.")
-        return
-
-    hea_base = os.path.splitext(hea_file.name)[0]
-    dat_base = os.path.splitext(dat_file.name)[0]
-    if hea_base != dat_base:
-        st.error(f"File name mismatch: '{hea_file.name}' and '{dat_file.name}' don't "
-                 f"appear to belong to the same recording.")
-        return
-
-    try:
-        raw_signal, fs, lead_names, load_warnings = load_wfdb_pair(hea_file, dat_file)
-        val_warnings, duration_sec = validate_signal(raw_signal, fs)
-    except ECGLoadError as e:
-        st.error(f"Could not process this recording: {e}")
-        return
-
-    for w in load_warnings + val_warnings:
-        st.warning(w)
-
-    with st.container(border=True):
-        st.subheader("ECG Uploaded Successfully")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Recording ID", hea_base)
-        c2.metric("Sampling rate", f"{fs:.0f} Hz")
-        c3.metric("Leads", len(lead_names))
-        c4.metric("Duration", f"{duration_sec:.1f} s")
-
-    with st.expander("View ECG"):
-        lead_choice = st.selectbox("Lead", lead_names, key="preview_lead")
-        st.line_chart(raw_signal[:, lead_names.index(lead_choice)])
-
-    if st.button("Analyze ECG", type="primary"):
-        with st.spinner("Running ECG analysis..."):
-            hr_result = detect_heart_rate(raw_signal[:, 0], fs)
-            model_input, prep_warnings = prepare_for_model(raw_signal, fs)
-            for w in prep_warnings:
-                st.warning(w)
-
-            model = load_model()
-            x_tensor = torch.from_numpy(model_input).unsqueeze(0)
-            with torch.no_grad():
-                logits = model(x_tensor)
-                probs = model.calibrated_probs(logits)[0]
-            pred_idx = int(torch.argmax(probs).item())
-            pred_class = SUPERCLASSES[pred_idx]
-            confidence = float(probs[pred_idx].item())
-
-            cam = grad_cam_1d(model, x_tensor, pred_idx)
-            start_sec, end_sec = top_attributed_region(cam, fs=100)
-
-            query = build_query(pred_class, CLASS_FULL_NAMES[pred_class])
-            passages = []
-            if os.path.exists(STORE_PATH):
-                raw_passages = retrieve(query, store_path=STORE_PATH, top_k=3)
-                passages = [{"source": s, "text": t, "score": sc} for s, t, sc in raw_passages]
-
-            try:
-                explanation = compose_response(
-                    pred_class, confidence, start_sec, end_sec,
-                    [(p["source"], p["text"], p["score"]) for p in passages],
-                    heart_rate=hr_result["heart_rate"], n_rpeaks=hr_result["n_rpeaks"],
-                )
-            except Exception as e:
-                st.warning(f"Could not generate the AI explanation: {e}. "
-                           f"The prediction and measurements below are still valid.")
-                explanation = None
-
-            record_uuid = str(uuid.uuid4())
-            file_dir = os.path.join(ECG_FILES_DIR, record_uuid)
-            os.makedirs(file_dir, exist_ok=True)
-            with open(os.path.join(file_dir, hea_file.name), "wb") as f:
-                f.write(hea_file.getbuffer())
-            with open(os.path.join(file_dir, dat_file.name), "wb") as f:
-                f.write(dat_file.getbuffer())
-
-            ecg_id = cdb.create_ecg_record(
-                st.session_state.user_id, hea_file.name, "wfdb", fs,
-                len(lead_names), duration_sec, file_dir=file_dir,
-            )
-            features = {"heart_rate": hr_result["heart_rate"], "n_rpeaks": hr_result["n_rpeaks"],
-                        "hr_reliable": hr_result["reliable"]}
-            xai = {"region_start_sec": start_sec, "region_end_sec": end_sec}
-            analysis_id = cdb.create_analysis(
-                ecg_id, pred_class, confidence, features, xai, passages, explanation,
-            )
-            ecg_record = cdb.get_ecg_record(ecg_id)
-            analysis = cdb.get_analysis(analysis_id)
-            st.session_state.current_ecg = {"ecg_id": ecg_id, "analysis_id": analysis_id}
-
-        render_report_body(analysis, ecg_record, chat_key=f"chat_{analysis_id}")
-
-        st.divider()
-        patient = {"name": st.session_state.name, "age": st.session_state.age,
-                   "sex": st.session_state.sex, "username": st.session_state.username}
-        os.makedirs(REPORTS_DIR, exist_ok=True)
-        pdf_path = os.path.join(REPORTS_DIR, f"report_{analysis_id}.pdf")
-        generate_pdf_report(pdf_path, patient, ecg_record, analysis, CLASS_FULL_NAMES)
-        cdb.create_report(st.session_state.user_id, ecg_id, analysis_id,
-                           {"generated_from": "New Analysis page"}, pdf_path)
-        with open(pdf_path, "rb") as f:
-            st.download_button("Download Report (PDF)", f,
-                                file_name=os.path.basename(pdf_path), mime="application/pdf")
-        st.success("Report generated and saved to your history.")
-
-
-def page_history():
-    st.title("Patient History")
-    reports = cdb.get_reports_for_user(st.session_state.user_id)
-    if not reports:
-        st.info("No previous ECG analyses yet.")
-        return
-
-    open_id = st.session_state.get("open_report_id")
-    st.subheader("Previous Reports")
-    header = st.columns([2, 2, 3, 2, 1])
-    for h, label in zip(header, ["Date", "ECG", "AI Interpretation", "Report", ""]):
-        h.write(f"**{label}**")
-
-    for r in reports:
-        analysis = r["analysis"] or {}
-        ecg = r["ecg_record"] or {}
-        pred = analysis.get("prediction")
-        friendly = FRIENDLY_DESCRIPTIONS.get(pred, "N/A").capitalize() if pred else "N/A"
-        cols = st.columns([2, 2, 3, 2, 1])
-        cols[0].write(r["created_at"][:19].replace("T", " "))
-        cols[1].write(ecg.get("filename", "N/A"))
-        cols[2].write(friendly)
-        has_pdf = r.get("report_file_path") and os.path.exists(r["report_file_path"])
-        cols[3].write("Available" if has_pdf else "Not generated")
-        if cols[4].button("Open", key=f"open_{r['id']}"):
-            st.session_state.open_report_id = r["id"]
+    st.markdown('<div class="main-header">📋 New Analysis</div>', unsafe_allow_html=True)
+    
+    user_id = st.session_state.user_id
+    
+    # ---- Patient Selection ----
+    existing_patients = patient_manager.get_patients_for_user(user_id)
+    
+    if existing_patients:
+        patient_options = {p["id"]: get_patient_display_name(p) for p in existing_patients}
+        patient_options["new"] = "+ Create New Patient"
+        
+        selected = st.selectbox(
+            "Patient",
+            list(patient_options.keys()),
+            format_func=lambda x: patient_options[x],
+            key="patient_select"
+        )
+        
+        if selected == "new":
+            patient_id = render_create_patient(user_id)
+            if patient_id:
+                st.session_state.selected_patient_id = patient_id
+                st.rerun()
+        else:
+            st.session_state.selected_patient_id = selected
+            patient = patient_manager.get_patient(selected)
+            if patient:
+                st.session_state.current_patient = patient
+    else:
+        st.info("No patients yet. Create one below.")
+        patient_id = render_create_patient(user_id)
+        if patient_id:
+            st.session_state.selected_patient_id = patient_id
             st.rerun()
-
-    if open_id:
-        report = cdb.get_report_by_id(open_id)
-        if report:
-            st.divider()
-            st.subheader("Report Detail")
-            render_report_body(report["analysis"] or {}, report["ecg_record"] or {},
-                                chat_key=f"chat_{report['analysis_id']}")
-            if report.get("report_file_path") and os.path.exists(report["report_file_path"]):
-                with open(report["report_file_path"], "rb") as f:
-                    st.download_button("Download PDF", f,
-                                        file_name=os.path.basename(report["report_file_path"]),
-                                        mime="application/pdf", key="hist_dl")
-
-
-def page_compare():
-    st.title("Compare ECG Records")
-    ecg_records = cdb.get_ecg_records_for_user(st.session_state.user_id)
-    if len(ecg_records) < 2:
-        st.info("You need at least two ECG recordings to compare.")
+    
+    patient = st.session_state.current_patient
+    if not patient:
+        st.info("Please create or select a patient to continue.")
         return
-
-    options = {f"{r['upload_time'][:19].replace('T',' ')} - {r['filename']}": r for r in ecg_records}
-    labels = list(options.keys())
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.write("**Current ECG**")
-        current_label = st.selectbox("Select ECG", labels, index=0, key="cmp_current")
-    with col_b:
-        st.write("**Previous ECG**")
-        prev_label = st.selectbox("Select ECG", labels, index=min(1, len(labels) - 1), key="cmp_prev")
-
-    if current_label == prev_label:
-        st.warning("Select two different recordings to compare.")
-        return
-
-    ecg_current, ecg_prev = options[current_label], options[prev_label]
-
-    def load_signal(ecg_record):
-        file_dir = ecg_record.get("file_dir")
-        if not file_dir or not os.path.isdir(file_dir):
-            return None, None
-        files = os.listdir(file_dir)
-        hea = next((f for f in files if f.endswith(".hea")), None)
-        dat = next((f for f in files if f.endswith(".dat")), None)
-        if not hea or not dat:
-            return None, None
-        import wfdb
-        record = wfdb.rdrecord(os.path.join(file_dir, os.path.splitext(hea)[0]))
-        return record.p_signal, list(record.sig_name)
-
-    sig_current, leads_current = load_signal(ecg_current)
-    sig_prev, leads_prev = load_signal(ecg_prev)
-
-    st.subheader("ECG Waveform Comparison")
-    if sig_current is not None and sig_prev is not None:
-        common_leads = [l for l in leads_current if l in leads_prev]
-        if common_leads:
-            lead_choice = st.selectbox("Lead", common_leads, key="cmp_lead")
-            wc1, wc2 = st.columns(2)
-            with wc1:
-                st.caption("Current")
-                st.line_chart(sig_current[:, leads_current.index(lead_choice)])
-            with wc2:
-                st.caption("Previous")
-                st.line_chart(sig_prev[:, leads_prev.index(lead_choice)])
-        else:
-            st.caption("No common lead names found between these recordings.")
-    else:
-        st.caption("Original waveform data not available for one or both recordings.")
-
-    all_reports = cdb.get_reports_for_user(st.session_state.user_id)
-    analysis_current = next((r["analysis"] for r in all_reports if r["ecg_record_id"] == ecg_current["id"]), None)
-    analysis_prev = next((r["analysis"] for r in all_reports if r["ecg_record_id"] == ecg_prev["id"]), None)
-
-    st.subheader("Feature Comparison")
-    if analysis_current and analysis_prev:
-        f_cur = analysis_current.get("features") or {}
-        f_prev = analysis_prev.get("features") or {}
-        rows = []
-        if f_cur.get("heart_rate") is not None and f_prev.get("heart_rate") is not None:
-            change = f_cur["heart_rate"] - f_prev["heart_rate"]
-            rows.append(["Heart rate (bpm)", f"{f_prev['heart_rate']:.1f}", f"{f_cur['heart_rate']:.1f}", f"{change:+.1f}"])
-        if rows:
-            st.table({"Feature": [r[0] for r in rows], "Previous": [r[1] for r in rows],
-                      "Current": [r[2] for r in rows], "Change": [r[3] for r in rows]})
-        else:
-            st.caption("No comparable features available for both recordings.")
-    else:
-        st.caption("Analysis not available for one or both recordings.")
-
-    st.subheader("AI Interpretation Comparison")
-    pred_prev = analysis_prev.get("prediction") if analysis_prev else None
-    pred_cur = analysis_current.get("prediction") if analysis_current else None
-    pc1, pc2 = st.columns(2)
-    pc1.metric("Previous", FRIENDLY_DESCRIPTIONS.get(pred_prev, "N/A").capitalize() if pred_prev else "N/A")
-    pc2.metric("Current", FRIENDLY_DESCRIPTIONS.get(pred_cur, "N/A").capitalize() if pred_cur else "N/A")
-
-    if pred_prev and pred_cur:
-        if pred_prev != pred_cur:
-            st.write(f"The model's interpretation changed from "
-                     f"**{FRIENDLY_DESCRIPTIONS.get(pred_prev, pred_prev)}** to "
-                     f"**{FRIENDLY_DESCRIPTIONS.get(pred_cur, pred_cur)}**.")
-        else:
-            st.write("The model produced the same interpretation for both recordings.")
-    st.caption(
-        "This describes how the model's output and measured features changed between "
-        "recordings — it is not a clinical judgment about whether the patient's "
-        "condition has improved or worsened. Clinical interpretation requires "
-        "professional validation."
-    )
-
-
-def page_knowledge_base():
-    st.title("Knowledge Base")
-    st.caption("Medical reference documents used to ground CardioAgent's explanations. "
-               "Kept separate from patient data.")
-
-    if st.button("Build Default Knowledge Base"):
-        with st.spinner("Indexing..."):
-            store = VectorStore()
-            ok = seed_default_kb(store)
-            if ok:
-                store.save(STORE_PATH)
-                st.success(f"Indexed {len(store.chunks)} chunks.")
-            else:
-                st.error("Default knowledge base file not found.")
-
+    
+    # ---- Patient Summary ----
+    st.markdown(f"""
+    <div class="patient-summary">
+        <b>{patient.get('name', 'Unknown')}</b> · 
+        {patient.get('age', 'N/A')} yrs · 
+        {patient.get('sex', 'N/A')} · 
+        Symptoms: {format_symptoms(patient.get('symptoms', []))}
+    </div>
+    """, unsafe_allow_html=True)
+    
     st.divider()
-    uploaded_files = st.file_uploader("Upload PDF/TXT", type=["pdf", "txt"], accept_multiple_files=True)
-    if st.button("Add Documents"):
-        if not uploaded_files:
-            st.warning("No files selected.")
+    
+    # ---- Analysis Type (Only Signal + Report) ----
+    st.markdown("### Choose Analysis")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        with st.container(border=True):
+            st.markdown('<div style="text-align:center; padding:8px 0;">', unsafe_allow_html=True)
+            st.markdown('<span style="font-size:36px;">📊</span>', unsafe_allow_html=True)
+            st.markdown('<div style="font-weight:600; font-size:18px;">Signal Analysis</div>', unsafe_allow_html=True)
+            st.markdown('<div style="color:#5a6a7a; font-size:13px;">Raw ECG signal (.hea + .dat)</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+            if st.button("Select Signal Analysis", use_container_width=True, key="btn_signal"):
+                st.session_state.analysis_type = "signal"
+                st.session_state.show_analysis_input = True
+                st.rerun()
+    
+    with col2:
+        with st.container(border=True):
+            st.markdown('<div style="text-align:center; padding:8px 0;">', unsafe_allow_html=True)
+            st.markdown('<span style="font-size:36px;">📄</span>', unsafe_allow_html=True)
+            st.markdown('<div style="font-weight:600; font-size:18px;">Medical Report</div>', unsafe_allow_html=True)
+            st.markdown('<div style="color:#5a6a7a; font-size:13px;">ECG report text or PDF</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+            if st.button("Select Medical Report", use_container_width=True, key="btn_report"):
+                st.session_state.analysis_type = "report"
+                st.session_state.show_analysis_input = True
+                st.rerun()
+    
+    # ---- Input Area (shown after selection) ----
+    if st.session_state.show_analysis_input:
+        st.divider()
+        analysis_type = st.session_state.analysis_type
+        
+        if analysis_type == "signal":
+            render_signal_analysis(patient)
+        elif analysis_type == "report":
+            render_report_analysis(patient)
         else:
-            with st.spinner("Processing..."):
-                store = VectorStore()
+            st.info("Select an analysis type above.")
+
+
+def render_create_patient(user_id):
+    """Render the create patient form."""
+    with st.container(border=True):
+        st.markdown("#### New Patient")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            name = st.text_input("Patient Name")
+            age = st.number_input("Age", min_value=0, max_value=150, value=50)
+        with col2:
+            sex = st.selectbox("Sex", ["Select...", "Male", "Female", "Other"])
+        
+        st.markdown("**Symptoms**")
+        symptoms_options = [
+            "Chest pain", "Chest discomfort", "Shortness of breath",
+            "Palpitations", "Dizziness", "Fainting", "Fatigue",
+            "No symptoms", "Other"
+        ]
+        symptoms = st.multiselect("Select symptoms", symptoms_options, default=[])
+        
+        other_symptom = st.text_input("Other symptoms (optional)")
+        if other_symptom and other_symptom not in symptoms:
+            symptoms.append(other_symptom)
+        
+        if st.button("Create Patient", type="primary", use_container_width=True):
+            if not name.strip():
+                st.error("Patient name is required.")
+                return None
+            if sex == "Select...":
+                st.warning("Please select a sex.")
+                return None
+            
+            patient_id = patient_manager.create_patient(
+                user_id=user_id,
+                name=name.strip(),
+                age=age,
+                sex=sex,
+                symptoms=symptoms
+            )
+            st.success(f"Patient {name} created!")
+            patient = patient_manager.get_patient(patient_id)
+            st.session_state.current_patient = patient
+            st.session_state.selected_patient_id = patient_id
+            return patient_id
+    
+    return None
+
+
+# ===== SIGNAL ANALYSIS =====
+def render_signal_analysis(patient):
+    """Render signal analysis interface (simplified)."""
+    st.markdown("#### Upload ECG Signal")
+    st.caption("Upload .hea and .dat files")
+    
+    if not os.path.exists(CHECKPOINT):
+        st.error(f"No trained model found at '{CHECKPOINT}'.")
+        return
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        hea_file = st.file_uploader("Select .hea file", type=["hea"])
+    with col2:
+        dat_file = st.file_uploader("Select matching .dat file", type=["dat"])
+    
+    if not hea_file or not dat_file:
+        st.info("Upload both .hea and .dat files to continue.")
+        return
+    
+    if st.button("🔍 Analyze Signal", type="primary", use_container_width=True):
+        with st.spinner("Analyzing ECG signal..."):
+            try:
+                raw_signal, fs, lead_names, _ = load_wfdb_pair(hea_file, dat_file)
+                val_warnings, duration_sec = validate_signal(raw_signal, fs, min_duration_sec=2.0)
+                
+                # Heart rate
+                hr_result = detect_heart_rate(raw_signal[:, 0], fs)
+                
+                # Model
+                model = load_model()
+                model_input, _ = prepare_for_model(raw_signal, fs)
+                x_tensor = torch.from_numpy(model_input).unsqueeze(0)
+                
+                with torch.no_grad():
+                    logits = model(x_tensor)
+                    probs = model.calibrated_probs(logits)[0]
+                
+                pred_idx = int(torch.argmax(probs).item())
+                pred_class = SUPERCLASSES[pred_idx]
+                confidence = float(probs[pred_idx].item())
+                
+                # Grad-CAM
+                cam = grad_cam_1d(model, x_tensor, pred_idx)
+                start_sec, end_sec, _ = top_attributed_region(cam, fs=100)
+                
+                # Measurements
+                measurements = extract_ecg_measurements(raw_signal[:, 0], fs)
+                if hr_result.get("heart_rate"):
+                    measurements["heart_rate"] = hr_result["heart_rate"]
+                
+                # RAG
+                query = f"{pred_class} {CLASS_FULL_NAMES.get(pred_class, '')} ECG"
+                passages = []
                 if os.path.exists(STORE_PATH):
-                    store.load(STORE_PATH)
-                os.makedirs("documents", exist_ok=True)
-                for uf in uploaded_files:
-                    save_path = os.path.join("documents", uf.name)
-                    with open(save_path, "wb") as f:
-                        f.write(uf.getbuffer())
                     try:
-                        raw_text = extract_text(save_path)
-                    except Exception as e:
-                        st.error(f"Failed to process {uf.name}: {e}")
-                        continue
-                    cleaned = clean_text(raw_text)
-                    if not cleaned:
-                        st.warning(f"No extractable text in {uf.name}.")
-                        continue
-                    chunks = chunk_text(cleaned)
-                    store.add_texts(chunks, source=uf.name)
-                    st.success(f"{uf.name}: indexed")
-                store.save(STORE_PATH)
+                        raw = retrieve(query, store_path=STORE_PATH, top_k=3)
+                        passages = [{"source": s, "text": t, "score": sc} for s, t, sc in raw]
+                    except:
+                        pass
+                
+                features = {"heart_rate": measurements.get("heart_rate"), "n_rpeaks": hr_result.get("n_rpeaks", 0)}
+                xai = {"region_start_sec": start_sec, "region_end_sec": end_sec}
+                
+                explanation, severity = compose_response(
+                    pred_class, confidence, features, xai,
+                    [(p["source"], p["text"], p["score"]) for p in passages],
+                    patient, measurements
+                )
+                
+                # Store analysis
+                analysis_id = cdb.create_analysis_with_patient(
+                    patient_id=patient["id"],
+                    user_id=st.session_state.user_id,
+                    analysis_type="signal",
+                    prediction=pred_class,
+                    confidence=confidence,
+                    features=features,
+                    xai=xai,
+                    rag_sources=passages,
+                    explanation=explanation,
+                    severity=severity,
+                    summary=f"ECG pattern: {FRIENDLY_DESCRIPTIONS.get(pred_class, pred_class)}",
+                    mode_type="research",
+                    patient_context={"age": patient.get("age"), "sex": patient.get("sex"), "symptoms": patient.get("symptoms")},
+                    clinical_reasoning={"severity": severity, "explanation": explanation}
+                )
+                
+                st.session_state.current_analysis = {
+                    "id": analysis_id,
+                    "prediction": pred_class,
+                    "confidence": confidence,
+                    "friendly_name": FRIENDLY_DESCRIPTIONS.get(pred_class, pred_class),
+                    "explanation": explanation,
+                    "severity": severity,
+                    "features": features,
+                    "measurements": measurements,
+                    "xai": xai,
+                    "rag_sources": passages,
+                    "analysis_type": "signal",
+                    "patient": patient,
+                    "signal": raw_signal,
+                    "fs": fs,
+                    "lead_names": lead_names,
+                    "cam": cam
+                }
+                st.session_state.analysis_complete = True
+                st.rerun()
+                
+            except ECGLoadError as e:
+                st.error(f"❌ {str(e)}")
+    
+    if st.session_state.analysis_complete and st.session_state.current_analysis:
+        render_concise_result(st.session_state.current_analysis)
 
+
+# ===== MEDICAL REPORT ANALYSIS =====
+def render_report_analysis(patient):
+    """Render medical report analysis interface (simplified)."""
+    st.markdown("#### Upload or Paste ECG Report")
+    
+    input_method = st.radio(
+        "Input method",
+        ["Paste Report Text", "Upload PDF Report"],
+        horizontal=True
+    )
+    
+    ecg_data = ECGReportData()
+    
+    if input_method == "Paste Report Text":
+        report_text = st.text_area("Paste ECG report text here", height=150)
+        if report_text:
+            ecg_data = parse_report_text(report_text)
+            if ecg_data and ecg_data.has_data():
+                st.success("✅ Measurements extracted")
+                with st.expander("Extracted Measurements"):
+                    st.json(ecg_data.to_dict())
+    
+    elif input_method == "Upload PDF Report":
+        pdf_file = st.file_uploader("Upload PDF report", type=["pdf"])
+        if pdf_file:
+            with st.spinner("Processing PDF..."):
+                ecg_data = parse_pdf_file_object(pdf_file)
+                if ecg_data and ecg_data.has_data():
+                    st.success("✅ PDF processed successfully")
+                    with st.expander("Extracted Measurements"):
+                        st.json(ecg_data.to_dict())
+                else:
+                    st.warning("Could not extract measurements. Try pasting text.")
+    
+    # Manual fallback
+    with st.expander("Manual Entry (if auto-extraction failed)"):
+        col1, col2 = st.columns(2)
+        with col1:
+            ecg_data.heart_rate = st.number_input("Heart Rate (bpm)", min_value=0.0, max_value=300.0, value=None, step=1.0)
+            ecg_data.pr_interval = st.number_input("PR Interval (ms)", min_value=0.0, max_value=500.0, value=None, step=1.0)
+        with col2:
+            ecg_data.qrs_duration = st.number_input("QRS Duration (ms)", min_value=0.0, max_value=300.0, value=None, step=1.0)
+            ecg_data.qtc_interval = st.number_input("QTc Interval (ms)", min_value=0.0, max_value=800.0, value=None, step=1.0)
+            ecg_data.rhythm = st.selectbox("Rhythm", ["", "Sinus", "Atrial Fibrillation", "Atrial Flutter"])
+            ecg_data.st_segment = st.selectbox("ST Segment", ["", "Normal", "Elevation", "Depression"])
+            ecg_data.t_wave = st.selectbox("T Wave", ["", "Normal", "Inversion", "Flat"])
+    
+    if st.button("🔍 Analyze Report", type="primary", use_container_width=True):
+        if not ecg_data.has_data():
+            st.warning("Please enter at least one ECG measurement or interpretation.")
+            return
+        
+        with st.spinner("Analyzing report..."):
+            patient_context = PatientContext(
+                age=patient.get("age"),
+                sex=patient.get("sex"),
+                symptoms=", ".join(patient.get("symptoms", [])) if patient.get("symptoms") else None,
+                history=None,
+                vitals={}
+            )
+            
+            result = clinical_report_pipeline(ecg_data, patient_context, True, STORE_PATH)
+            
+            severity = result.get("severity", {}).get("level", "routine review")
+            analysis_id = cdb.create_analysis_with_patient(
+                patient_id=patient["id"],
+                user_id=st.session_state.user_id,
+                analysis_type="report",
+                prediction="Report-based",
+                confidence=None,
+                features=ecg_data.to_dict(),
+                xai={},
+                rag_sources=result.get("guidelines_used", []),
+                explanation=result.get("llm_response", ""),
+                severity=severity,
+                summary="Report-based ECG analysis",
+                mode_type="report",
+                report_text=ecg_data.raw_report_text,
+                patient_context={"age": patient.get("age"), "sex": patient.get("sex"), "symptoms": patient.get("symptoms")},
+                clinical_reasoning=result.get("full_output", {})
+            )
+            
+            st.session_state.current_analysis = {
+                "id": analysis_id,
+                "prediction": "Report-based",
+                "confidence": None,
+                "friendly_name": "Report-based interpretation",
+                "explanation": result.get("llm_response", ""),
+                "severity": severity,
+                "features": ecg_data.to_dict(),
+                "xai": {},
+                "rag_sources": result.get("guidelines_used", []),
+                "analysis_type": "report",
+                "patient": patient,
+                "clinical_reasoning": result.get("full_output", {})
+            }
+            st.session_state.analysis_complete = True
+            st.rerun()
+    
+    if st.session_state.analysis_complete and st.session_state.current_analysis:
+        render_concise_result(st.session_state.current_analysis)
+
+
+# ===== CONCISE RESULT RENDERER =====
+def render_concise_result(analysis):
+    """Render concise, clinically-focused results."""
+    patient = analysis.get("patient", {})
+    severity = analysis.get("severity", "routine review")
+    explanation = analysis.get("explanation", "")
+    pred = analysis.get("prediction")
+    friendly = analysis.get("friendly_name", "")
+    
+    # Emergency warning
+    if patient and patient.get("symptoms"):
+        symptoms_text = " ".join(patient.get("symptoms", []))
+        emergency_keywords = ["chest pain", "shortness of breath", "fainting", "loss of consciousness"]
+        if any(k in symptoms_text.lower() for k in emergency_keywords):
+            st.markdown("""
+            <div class="emergency-warning">
+            ⚠️ <strong>Emergency symptoms reported — seek immediate professional care.</strong>
+            </div>
+            """, unsafe_allow_html=True)
+    
     st.divider()
-    st.subheader("Indexed Documents")
-    if os.path.exists(STORE_PATH):
-        store = VectorStore()
-        store.load(STORE_PATH)
-        docs = store.list_documents()
-        if docs:
-            for src, count in docs.items():
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([3, 1, 1])
-                    c1.write(f"**{src}**")
-                    c2.write("Indexed")
-                    c3.write(f"{count} chunks")
-        else:
-            st.caption("No documents indexed yet.")
+    st.markdown('<div class="main-header">📊 Analysis Result</div>', unsafe_allow_html=True)
+    
+    # Patient info
+    st.markdown(f"""
+    <div style="color:#5a6a7a; font-size:14px; margin-bottom:12px;">
+        {patient.get('name', 'Unknown')} · {patient.get('age', 'N/A')} yrs · {patient.get('sex', 'N/A')}
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ---- FINDING ----
+    if pred and pred != "Report-based":
+        finding_text = friendly.capitalize() if friendly else f"ECG pattern: {pred}"
     else:
-        st.caption("No knowledge base built yet.")
+        finding_text = "Report-based interpretation"
+    
+    st.markdown(f"""
+    <div class="result-finding">
+        {finding_text}
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ---- SEVERITY ----
+    severity_colors = {
+        "routine review": "severity-low",
+        "prompt clinical review": "severity-moderate",
+        "urgent evaluation may be appropriate": "severity-high"
+    }
+    color_class = severity_colors.get(severity, "severity-moderate")
+    
+    st.markdown(f"""
+    <div style="margin: 8px 0 16px 0;">
+        <span style="font-weight:500;">Severity:</span>
+        <span class="{color_class}" style="font-weight:600;">{severity}</span>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ---- KEY FINDINGS ----
+    features = analysis.get("features", {})
+    if features and any(features.values()):
+        st.markdown("#### Key Findings")
+        
+        findings = []
+        if features.get("heart_rate"):
+            findings.append(f"Heart Rate: {features['heart_rate']} bpm")
+        if features.get("rhythm"):
+            findings.append(f"Rhythm: {features['rhythm']}")
+        if features.get("st_segment"):
+            findings.append(f"ST Segment: {features['st_segment']}")
+        if features.get("t_wave"):
+            findings.append(f"T Wave: {features['t_wave']}")
+        if features.get("abnormalities"):
+            findings.append(f"Abnormalities: {', '.join(features['abnormalities'])}")
+        if features.get("qtc_interval"):
+            findings.append(f"QTc: {features['qtc_interval']} ms")
+        if features.get("qrs_duration"):
+            findings.append(f"QRS: {features['qrs_duration']} ms")
+        
+        for f in findings[:6]:
+            st.write(f"• {f}")
+    
+    # ---- WHY? (Grad-CAM for Signal) ----
+    if analysis.get("analysis_type") == "signal":
+        st.markdown("#### Why did the model say this?")
+        
+        # Grad-CAM Visualization
+        if "cam" in analysis and analysis["cam"] is not None:
+            try:
+                signal = analysis.get("signal")
+                fs = analysis.get("fs")
+                cam = analysis.get("cam")
+                lead_names = analysis.get("lead_names", [])
+                
+                if signal is not None and cam is not None:
+                    fig = create_gradcam_visualization(
+                        signal, cam, fs if fs else 100,
+                        lead_idx=0,
+                        title=f"Model Attribution — {friendly.capitalize() if friendly else 'ECG Analysis'}"
+                    )
+                    st.pyplot(fig)
+                    import matplotlib.pyplot as plt
+                    plt.close(fig)
+                    
+                    xai = analysis.get("xai", {})
+                    if xai.get("region_start_sec"):
+                        st.caption(f"🔍 The model focused on approximately {xai['region_start_sec']:.1f}s to {xai['region_end_sec']:.1f}s")
+            except Exception as e:
+                st.caption("Explainability visualization unavailable for this analysis.")
+        else:
+            st.caption("Explainability visualization not available for this analysis.")
+    
+    # ---- WHY? (Medical Report) ----
+    elif analysis.get("analysis_type") == "report":
+        st.markdown("#### Why was this flagged?")
+        st.markdown("The report contains findings that may warrant clinical review.")
+        
+        rag_sources = analysis.get("rag_sources", [])
+        if rag_sources:
+            with st.expander("Evidence / Sources"):
+                for s in rag_sources[:2]:
+                    st.markdown(f"**Source:** {s.get('source', 'Unknown')}")
+                    st.write(s.get('text', '')[:200] + "...")
+                    st.divider()
+    
+    # ---- WHAT TO REVIEW ----
+    st.markdown("#### What to Review")
+    review_items = []
+    if features and features.get("qtc_interval") and features["qtc_interval"] > 480:
+        review_items.append("QTc is prolonged — consider further evaluation")
+    if features and features.get("st_segment") == "Elevation":
+        review_items.append("ST elevation noted — urgent evaluation may be appropriate")
+    if features and features.get("abnormalities"):
+        for abn in features.get("abnormalities", [])[:3]:
+            review_items.append(f"Review: {abn}")
+    if not review_items:
+        review_items.append("Review the ECG findings in clinical context")
+        review_items.append("Compare with previous ECGs if available")
+    
+    for item in review_items[:4]:
+        st.write(f"• {item}")
+    
+    # ---- EXPLANATION ----
+    if explanation and len(explanation) > 50:
+        with st.expander("Detailed Explanation"):
+            st.markdown(explanation)
+    
+    # ---- TECHNICAL DETAILS (collapsed) ----
+    with st.expander("Technical Details"):
+        st.json({
+            "Analysis Type": analysis.get("analysis_type", "unknown"),
+            "Prediction": analysis.get("prediction"),
+            "Severity": severity,
+            "Features": features
+        })
+    
+    # ---- DISCLAIMER ----
+    st.divider()
+    st.caption("⚠️ This is an AI-assisted research prototype. All findings require clinical confirmation.")
+    
+    # ---- ACTIONS ----
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("💬 Ask CardioAgent", use_container_width=True):
+            st.session_state.show_chat = not st.session_state.get("show_chat", False)
+            st.rerun()
+    with col2:
+        if st.button("📄 Generate PDF", use_container_width=True):
+            generate_pdf_for_analysis(analysis)
+    with col3:
+        if st.button("📋 Save to History", use_container_width=True):
+            st.success("Analysis saved to history.")
+    
+    # ---- CHAT ----
+    if st.session_state.get("show_chat", False):
+        st.divider()
+        st.markdown("### 💬 Ask CardioAgent")
+        chat_key = f"chat_{analysis.get('id', 'default')}"
+        if chat_key not in st.session_state.chat_histories:
+            st.session_state.chat_histories[chat_key] = []
+        history = st.session_state.chat_histories[chat_key]
+        
+        for turn in history:
+            with st.chat_message("user" if turn["role"] == "user" else "assistant"):
+                st.write(turn["text"])
+        
+        q = st.chat_input("Ask about this analysis...")
+        if q:
+            history.append({"role": "user", "text": q})
+            with st.chat_message("user"):
+                st.write(q)
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    try:
+                        context = f"Analysis Type: {analysis.get('analysis_type', 'N/A')}\nSeverity: {severity}\nPatient: {patient.get('name', 'N/A')}\nFindings: {friendly}"
+                        answer = generate_chat_response(context, history[:-1], q)
+                    except Exception as e:
+                        answer = f"Could not generate response: {e}"
+                st.write(answer)
+            history.append({"role": "assistant", "text": answer})
 
 
+def generate_pdf_for_analysis(analysis):
+    """Generate and download PDF report."""
+    with st.spinner("Generating report..."):
+        try:
+            os.makedirs(REPORTS_DIR, exist_ok=True)
+            pdf_path = os.path.join(REPORTS_DIR, f"report_{analysis.get('id', uuid.uuid4())}.pdf")
+            
+            patient = analysis.get("patient", {})
+            patient_data = {
+                "name": patient.get("name", "Unknown"),
+                "age": patient.get("age", "N/A"),
+                "sex": patient.get("sex", "N/A"),
+                "email": st.session_state.email,
+            }
+            ecg_record = {
+                "filename": f"{analysis.get('analysis_type', 'unknown').capitalize()} Analysis",
+                "source_type": analysis.get('analysis_type', 'unknown'),
+                "sampling_rate": "N/A",
+                "n_leads": "N/A",
+                "duration_sec": "N/A",
+                "upload_time": "N/A"
+            }
+            analysis_data = {
+                "prediction": analysis.get("prediction", "N/A"),
+                "confidence": analysis.get("confidence"),
+                "features": analysis.get("features", {}),
+                "xai": analysis.get("xai", {}),
+                "rag_sources": analysis.get("rag_sources", []),
+                "explanation": analysis.get("explanation", ""),
+                "severity": analysis.get("severity", "routine review"),
+                "summary": analysis.get("friendly_name", "ECG Analysis"),
+                "mode_type": analysis.get("analysis_type", "unknown"),
+                "patient_context": patient,
+                "clinical_reasoning": analysis.get("clinical_reasoning", {})
+            }
+            
+            generate_pdf_report(pdf_path, patient_data, ecg_record, analysis_data, CLASS_FULL_NAMES)
+            
+            with open(pdf_path, "rb") as f:
+                st.download_button(
+                    "📥 Download Report",
+                    f,
+                    file_name=os.path.basename(pdf_path),
+                    mime="application/pdf"
+                )
+            st.success("Report generated!")
+        except Exception as e:
+            st.error(f"Report generation failed: {e}")
+
+
+# ===== PAGE: HISTORY =====
+def page_history():
+    st.markdown('<div class="main-header">📋 History</div>', unsafe_allow_html=True)
+    
+    user_id = st.session_state.user_id
+    history = cdb.get_history_for_user(user_id)
+    
+    if not history:
+        st.info("No analyses yet.")
+        return
+    
+    for item in history[:20]:
+        patient = item.get("patient", {})
+        with st.container(border=True):
+            cols = st.columns([2, 1.5, 2, 1.5, 1])
+            cols[0].write(f"**{patient.get('name', 'Unknown')}**")
+            cols[1].write(item.get("created_at", "")[:16].replace("T", " "))
+            cols[2].write(f"_{item.get('analysis_type', 'unknown').capitalize()}_")
+            cols[3].write(item.get("severity", "N/A"))
+            if cols[4].button("View", key=f"view_{item['id']}"):
+                st.session_state.selected_analysis_id = item["id"]
+                st.session_state.page = "History Detail"
+                st.rerun()
+
+
+def page_history_detail():
+    st.markdown('<div class="main-header">📋 Analysis Detail</div>', unsafe_allow_html=True)
+    
+    analysis_id = st.session_state.selected_analysis_id
+    if not analysis_id:
+        st.warning("No analysis selected.")
+        return
+    
+    analysis = cdb.get_analysis_by_id(analysis_id)
+    if not analysis:
+        st.error("Analysis not found.")
+        return
+    
+    patient = analysis.get("patient", {})
+    rendered = {
+        "id": analysis["id"],
+        "prediction": analysis.get("prediction", "N/A"),
+        "confidence": analysis.get("confidence"),
+        "friendly_name": analysis.get("summary", "ECG Analysis"),
+        "explanation": analysis.get("explanation", ""),
+        "severity": analysis.get("severity", "routine review"),
+        "features": analysis.get("features", {}),
+        "xai": analysis.get("xai", {}),
+        "rag_sources": analysis.get("rag_sources", []),
+        "analysis_type": analysis.get("analysis_type", "unknown"),
+        "patient": patient,
+        "clinical_reasoning": analysis.get("clinical_reasoning", {})
+    }
+    
+    render_concise_result(rendered)
+
+
+# ===== PAGE: COMPARE (SIMPLIFIED) =====
+def page_compare():
+    st.markdown('<div class="main-header">📈 Compare</div>', unsafe_allow_html=True)
+    st.caption("Compare two analyses of the same patient")
+    
+    user_id = st.session_state.user_id
+    history = cdb.get_history_for_user(user_id)
+    
+    if len(history) < 2:
+        st.info("You need at least two analyses to compare.")
+        return
+    
+    # Group by patient
+    patient_groups = {}
+    for item in history:
+        patient = item.get("patient", {})
+        patient_id = patient.get("id")
+        if not patient_id:
+            continue
+        if patient_id not in patient_groups:
+            patient_groups[patient_id] = {
+                "patient": patient,
+                "analyses": []
+            }
+        patient_groups[patient_id]["analyses"].append(item)
+    
+    # Find patients with at least 2 analyses
+    comparable_patients = {pid: data for pid, data in patient_groups.items() if len(data["analyses"]) >= 2}
+    
+    if not comparable_patients:
+        st.info("No patient has multiple analyses to compare.")
+        return
+    
+    # Select patient
+    patient_options = {pid: data["patient"].get("name", "Unknown") for pid, data in comparable_patients.items()}
+    selected_patient_id = st.selectbox(
+        "Select Patient",
+        list(patient_options.keys()),
+        format_func=lambda x: patient_options[x]
+    )
+    
+    if selected_patient_id not in comparable_patients:
+        st.warning("Patient not found.")
+        return
+    
+    patient_data = comparable_patients[selected_patient_id]
+    patient = patient_data["patient"]
+    analyses = sorted(patient_data["analyses"], key=lambda x: x.get("created_at", ""))
+    
+    if len(analyses) < 2:
+        st.warning("Not enough analyses for this patient.")
+        return
+    
+    # Select two analyses
+    options = {}
+    for a in analyses:
+        label = f"{a.get('created_at', '')[:16].replace('T', ' ')} - {a.get('analysis_type', 'unknown')}"
+        options[label] = a
+    
+    labels = list(options.keys())
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        label1 = st.selectbox("Earlier Analysis", labels, index=0, key="cmp1")
+    with col2:
+        label2 = st.selectbox("Later Analysis", labels, index=min(1, len(labels)-1), key="cmp2")
+    
+    if label1 == label2:
+        st.warning("Please select two different analyses.")
+        return
+    
+    earlier = options[label1]
+    later = options[label2]
+    
+    # ---- COMPARISON DISPLAY ----
+    st.divider()
+    st.markdown(f"""
+    <div style="font-size:20px; font-weight:600; color:#1a2332;">
+        Patient: {patient.get('name', 'Unknown')}
+    </div>
+    <div style="color:#5a6a7a; font-size:14px;">
+        {patient.get('age', 'N/A')} yrs · {patient.get('sex', 'N/A')}
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.divider()
+    
+    # Side by side
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown(f"""
+        <div class="compare-card">
+            <div class="label">Earlier Analysis</div>
+            <div class="date">{earlier.get('created_at', '')[:16].replace('T', ' ')}</div>
+            <div style="color:#5a6a7a; font-size:13px;">{earlier.get('analysis_type', 'unknown').capitalize()}</div>
+            <div class="result">
+                <b>Result:</b> {earlier.get('summary', 'N/A')}
+            </div>
+            <div style="margin-top:8px;">
+                <b>Severity:</b> {earlier.get('severity', 'N/A')}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown(f"""
+        <div class="compare-card">
+            <div class="label">Later Analysis</div>
+            <div class="date">{later.get('created_at', '')[:16].replace('T', ' ')}</div>
+            <div style="color:#5a6a7a; font-size:13px;">{later.get('analysis_type', 'unknown').capitalize()}</div>
+            <div class="result">
+                <b>Result:</b> {later.get('summary', 'N/A')}
+            </div>
+            <div style="margin-top:8px;">
+                <b>Severity:</b> {later.get('severity', 'N/A')}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # ---- OVERALL SUMMARY ----
+    st.divider()
+    st.markdown("#### Overall Summary")
+    
+    earlier_sev = earlier.get("severity", "routine review")
+    later_sev = later.get("severity", "routine review")
+    
+    # Compare severity
+    severity_order = ["routine review", "prompt clinical review", "urgent evaluation may be appropriate"]
+    earlier_idx = severity_order.index(earlier_sev) if earlier_sev in severity_order else 1
+    later_idx = severity_order.index(later_sev) if later_sev in severity_order else 1
+    
+    if earlier_idx < later_idx:
+        st.warning("The later analysis shows increased concern.")
+    elif earlier_idx > later_idx:
+        st.success("The later analysis shows decreased concern.")
+    else:
+        st.info("The level of concern is similar between analyses.")
+    
+    # Compare features if both have them
+    earlier_features = earlier.get("features", {})
+    later_features = later.get("features", {})
+    
+    changes = []
+    for key in ["heart_rate", "qtc_interval", "qrs_duration"]:
+        if key in earlier_features and key in later_features:
+            if earlier_features[key] != later_features[key]:
+                changes.append(f"{key}: {earlier_features[key]} → {later_features[key]}")
+    
+    if changes:
+        st.write("**Measured changes:**")
+        for c in changes:
+            st.write(f"• {c}")
+    else:
+        st.write("No comparable measurements between these analyses.")
+    
+    if earlier.get("analysis_type") != later.get("analysis_type"):
+        st.caption("ℹ️ Different analysis types were used. Comparison may be limited.")
+    
+    st.caption("⚠️ Comparison based on available data. Missing information is not estimated.")
+
+
+# ===== PAGE ROUTER =====
 PAGES = {
     "Dashboard": page_dashboard,
     "New Analysis": page_new_analysis,
     "History": page_history,
+    "History Detail": page_history_detail,
     "Compare": page_compare,
-    "Knowledge Base": page_knowledge_base,
 }
-PAGES[st.session_state.page]()
+
+# ===== MAIN =====
+render_sidebar()
+
+current_page = st.session_state.page
+if current_page in PAGES:
+    PAGES[current_page]()
+else:
+    page_dashboard()
