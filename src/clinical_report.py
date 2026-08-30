@@ -6,6 +6,7 @@ No raw ECG signal required. Uses measurements and patient information.
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 import re
+from severity_scorer import SeverityScorer
 
 
 @dataclass
@@ -27,7 +28,6 @@ class PatientContext:
         }
     
     def has_emergency_symptoms(self) -> bool:
-        """Check if patient has emergency symptoms."""
         if not self.symptoms:
             return False
         emergency = [
@@ -40,7 +40,7 @@ class PatientContext:
     
     def get_urgency_indicator(self) -> str:
         if self.has_emergency_symptoms():
-            return "⚠️ Emergency symptoms reported — seek immediate professional care"
+            return "Warning: Emergency symptoms reported — seek immediate professional care"
         return ""
 
 
@@ -83,7 +83,6 @@ class ECGReportData:
         }
     
     def has_data(self) -> bool:
-        """Check if any data has been extracted."""
         return any([
             self.heart_rate, self.pr_interval, self.qrs_duration,
             self.qt_interval, self.qtc_interval, self.rhythm,
@@ -93,20 +92,16 @@ class ECGReportData:
 
 
 def parse_report_text(text: str) -> ECGReportData:
-    """
-    Parse raw ECG report text into structured ECGReportData.
-    Uses multiple regex patterns to extract measurements from various formats.
-    """
+    """Parse raw ECG report text into structured ECGReportData."""
     data = ECGReportData(raw_report_text=text)
     
     if not text or not text.strip():
         return data
     
-    # Clean text
     text = text.replace('\n', ' ')
     text = re.sub(r'\s+', ' ', text)
     
-    # ---- Heart Rate ----
+    # Heart Rate
     hr_patterns = [
         r'(?:HR|Heart Rate|Heart rate)[:\s]+(\d+)',
         r'(\d+)\s*(?:bpm|BPM)',
@@ -119,7 +114,7 @@ def parse_report_text(text: str) -> ECGReportData:
             data.heart_rate = float(match.group(1))
             break
     
-    # ---- PR Interval ----
+    # PR Interval
     pr_patterns = [
         r'(?:PR|PR interval|P-R)[:\s]+(\d+)',
         r'PR\s*=\s*(\d+)',
@@ -131,7 +126,7 @@ def parse_report_text(text: str) -> ECGReportData:
             data.pr_interval = float(match.group(1))
             break
     
-    # ---- QRS Duration ----
+    # QRS Duration
     qrs_patterns = [
         r'(?:QRS|QRS duration)[:\s]+(\d+)',
         r'QRS\s*=\s*(\d+)',
@@ -143,7 +138,7 @@ def parse_report_text(text: str) -> ECGReportData:
             data.qrs_duration = float(match.group(1))
             break
     
-    # ---- QT Interval ----
+    # QT Interval
     qt_patterns = [
         r'(?:QT|QT interval)[:\s]+(\d+)',
         r'QT\s*=\s*(\d+)',
@@ -155,7 +150,7 @@ def parse_report_text(text: str) -> ECGReportData:
             data.qt_interval = float(match.group(1))
             break
     
-    # ---- QTc Interval ----
+    # QTc Interval
     qtc_patterns = [
         r'(?:QTc|QTc interval|QTcB|QTcF)[:\s]+(\d+)',
         r'QTc\s*=\s*(\d+)',
@@ -167,7 +162,7 @@ def parse_report_text(text: str) -> ECGReportData:
             data.qtc_interval = float(match.group(1))
             break
     
-    # ---- Rhythm ----
+    # Rhythm
     rhythm_patterns = [
         (r'(sinus rhythm|sinus arrhythmia|sinus bradycardia|sinus tachycardia)', 'Sinus rhythm'),
         (r'(atrial fibrillation|a-fib|afib)', 'Atrial Fibrillation'),
@@ -184,26 +179,26 @@ def parse_report_text(text: str) -> ECGReportData:
             data.rhythm = value
             break
     
-    # ---- Axis ----
+    # Axis
     axis_patterns = [
         (r'(normal axis|axis normal)', 'Normal'),
         (r'(left axis deviation|left axis|lax|LAD)', 'Left Axis Deviation'),
         (r'(right axis deviation|right axis|rax|RAD)', 'Right Axis Deviation'),
         (r'(extreme axis|extreme deviation)', 'Extreme Axis Deviation'),
-        (r'axis[:\s]+(\d+°)', None)  # Captures numeric axis
+        (r'axis[:\s]+(\d+°)', None)
     ]
     for pattern, value in axis_patterns:
-        if value:  # If it's a named value
+        if value:
             if re.search(pattern, text, re.IGNORECASE):
                 data.axis = value
                 break
-        else:  # Numeric axis
+        else:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 data.axis = match.group(1)
                 break
     
-    # ---- ST Segment ----
+    # ST Segment
     st_patterns = [
         (r'(st elevation|ste)', 'Elevation'),
         (r'(st depression|std)', 'Depression'),
@@ -215,7 +210,7 @@ def parse_report_text(text: str) -> ECGReportData:
             data.st_segment = value
             break
     
-    # ---- T Wave ----
+    # T Wave
     t_patterns = [
         (r'(t wave inversion|t inversion|inverted t|negative t|t-wave inversion)', 'Inversion'),
         (r'(flat t|t wave flat|flattened t)', 'Flat'),
@@ -228,7 +223,7 @@ def parse_report_text(text: str) -> ECGReportData:
             data.t_wave = value
             break
     
-    # ---- Bundle Branch ----
+    # Bundle Branch
     if re.search(r'lbbb|left bundle branch block', text, re.IGNORECASE):
         data.bundle_branch = 'LBBB'
     elif re.search(r'rbbb|right bundle branch block', text, re.IGNORECASE):
@@ -236,18 +231,17 @@ def parse_report_text(text: str) -> ECGReportData:
     elif re.search(r'bundle branch block|bbb', text, re.IGNORECASE):
         data.bundle_branch = 'Bundle Branch Block'
     
-    # ---- Q Waves ----
+    # Q Waves
     if re.search(r'(pathological q waves|q waves)', text, re.IGNORECASE):
         data.q_waves = 'Pathological'
     
-    # ---- P Wave ----
+    # P Wave
     if re.search(r'(p wave abnormality|bifid p|p pulmonale)', text, re.IGNORECASE):
         data.p_wave = 'Abnormal'
     elif re.search(r'(normal p|p wave normal)', text, re.IGNORECASE):
         data.p_wave = 'Normal'
     
-    # ---- Machine Interpretation ----
-    # Look for interpretation after common headers
+    # Machine Interpretation
     interp_patterns = [
         r'(?:Interpretation|Conclusion|Impressions|Findings|Summary|Diagnosis)[:\s]+([^.]+\.[^.]+)',
         r'(?:Interpretation|Conclusion|Impressions)[:\s]+([^\n]+)'
@@ -258,10 +252,8 @@ def parse_report_text(text: str) -> ECGReportData:
             data.machine_interpretation = match.group(1).strip()
             break
     
-    # ---- Abnormalities List ----
+    # Abnormalities List
     data.abnormalities = []
-    
-    # Check for common abnormalities
     abnormality_patterns = [
         ('ST elevation', r'st elevation'),
         ('ST depression', r'st depression'),
@@ -287,102 +279,108 @@ def parse_report_text(text: str) -> ECGReportData:
             if label not in data.abnormalities:
                 data.abnormalities.append(label)
     
-    # If T wave inversion was found but not in abnormalities list, add it
     if data.t_wave == 'Inversion' and 'T wave inversion' not in data.abnormalities:
         data.abnormalities.append('T wave inversion')
-    
-    # ---- Additional Measurements from Common Formats ----
-    # Try to parse "KEY: VALUE" format
-    common_formats = [
-        (r'Heart Rate[:\s]+(\d+)\s*(?:bpm)?', 'heart_rate'),
-        (r'PR[:\s]+(\d+)\s*(?:ms)?', 'pr_interval'),
-        (r'QRS[:\s]+(\d+)\s*(?:ms)?', 'qrs_duration'),
-        (r'QT[:\s]+(\d+)\s*(?:ms)?', 'qt_interval'),
-        (r'QTc[:\s]+(\d+)\s*(?:ms)?', 'qtc_interval'),
-    ]
-    
-    for pattern, field in common_formats:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match and getattr(data, field) is None:
-            setattr(data, field, float(match.group(1)))
     
     return data
 
 
-def determine_severity_from_measurements(data: ECGReportData, patient: PatientContext) -> Dict[str, Any]:
-    """Evidence-grounded severity assessment based on ECG measurements."""
-    severity = "routine review"
-    evidence = []
+def determine_severity_from_report(ecg_data: ECGReportData, patient: PatientContext):
+    """
+    Data-driven severity from report data.
+    NO RULES - uses severity scorer.
+    """
+    scorer = SeverityScorer()
     
-    if data.qtc_interval:
-        if data.qtc_interval > 500:
-            severity = "urgent evaluation may be appropriate"
-            evidence.append(f"QTc > 500 ms (prolonged) — may warrant urgent evaluation")
-        elif data.qtc_interval > 480:
-            if severity == "routine review":
-                severity = "prompt clinical review"
-            evidence.append(f"QTc > 480 ms (prolonged) — may warrant clinical review")
+    # Build prediction
+    ecg_prediction = {'prediction': 'Report-based', 'confidence': 0.7}
     
-    if data.qrs_duration:
-        if data.qrs_duration > 120:
-            if severity == "routine review":
-                severity = "prompt clinical review"
-            evidence.append(f"QRS > 120 ms (widened) — may indicate bundle branch block")
+    # Build patient info
+    patient_info = {
+        'age': patient.age if patient else 50,
+        'sex': patient.sex if patient else 'Unknown',
+        'symptoms': patient.symptoms if patient else ''
+    }
     
-    if data.heart_rate:
-        if data.heart_rate > 150 or data.heart_rate < 30:
-            severity = "urgent evaluation may be appropriate"
-            evidence.append(f"Heart rate {data.heart_rate} bpm — may warrant urgent evaluation")
-        elif data.heart_rate > 120:
-            if severity == "routine review":
-                severity = "prompt clinical review"
-            evidence.append(f"Heart rate {data.heart_rate} bpm — tachycardia")
-        elif data.heart_rate < 50:
-            if severity == "routine review":
-                severity = "prompt clinical review"
-            evidence.append(f"Heart rate {data.heart_rate} bpm — bradycardia")
+    # Build measurements
+    measurements = {
+        'heart_rate': ecg_data.heart_rate,
+        'qtc_interval': ecg_data.qtc_interval,
+        'qrs_duration': ecg_data.qrs_duration,
+        'pr_interval': ecg_data.pr_interval,
+        'st_elevation': ecg_data.st_segment == 'Elevation',
+        'st_depression': ecg_data.st_segment == 'Depression',
+        't_inversion': ecg_data.t_wave == 'Inversion'
+    }
     
-    if data.st_segment == "Elevation":
-        if severity in ["routine review", "prompt clinical review"]:
-            severity = "urgent evaluation may be appropriate"
-        evidence.append("ST elevation — may warrant urgent evaluation")
-    elif data.st_segment == "Depression":
-        if severity == "routine review":
-            severity = "prompt clinical review"
-        evidence.append("ST depression — may warrant clinical review")
+    result = scorer.calculate(ecg_prediction, patient_info, measurements)
+    return result
+
+
+def clinical_report_pipeline(ecg_data: ECGReportData,
+                            patient: PatientContext,
+                            use_rag: bool = True,
+                            rag_store_path: str = "vector_store.pkl") -> Dict[str, Any]:
+    """Complete clinical report pipeline using data-driven severity."""
     
-    if data.t_wave == "Inversion":
-        if severity == "routine review":
-            severity = "prompt clinical review"
-        evidence.append("T wave inversion — may warrant clinical review")
+    # Step 1: Determine severity (NO RULES)
+    severity_result = determine_severity_from_report(ecg_data, patient)
     
-    if data.abnormalities:
-        if "Myocardial Infarction" in data.abnormalities:
-            severity = "urgent evaluation may be appropriate"
-            evidence.append("Myocardial infarction pattern detected")
-        elif "Atrial Fibrillation" in data.abnormalities:
-            if severity == "routine review":
-                severity = "prompt clinical review"
-            evidence.append("Atrial fibrillation — may warrant evaluation")
+    # Step 2: Retrieve guidelines (if RAG enabled)
+    retrieved = []
+    if use_rag:
+        try:
+            query_parts = []
+            if ecg_data.heart_rate:
+                query_parts.append(f"heart rate {ecg_data.heart_rate}")
+            if ecg_data.st_segment:
+                query_parts.append(f"ST {ecg_data.st_segment}")
+            if ecg_data.rhythm:
+                query_parts.append(f"rhythm {ecg_data.rhythm}")
+            if ecg_data.abnormalities:
+                query_parts.append(" ".join(ecg_data.abnormalities))
+            if patient and patient.symptoms:
+                query_parts.append(patient.symptoms)
+            
+            query = "ECG " + " ".join(query_parts) if query_parts else "ECG interpretation guidelines"
+            
+            from rag import retrieve
+            raw = retrieve(query, store_path=rag_store_path, top_k=3)
+            retrieved = [{"source": s, "text": t, "score": sc} for s, t, sc in raw]
+        except Exception as e:
+            retrieved = [{"text": f"RAG retrieval unavailable: {e}"}]
     
-    if patient and patient.symptoms:
-        if patient.has_emergency_symptoms():
-            if severity == "routine review":
-                severity = "prompt clinical review"
-            elif severity == "prompt clinical review":
-                severity = "urgent evaluation may be appropriate"
-            evidence.append("Patient reported emergency symptoms")
+    # Step 3: Build LLM prompt
+    prompt = build_clinical_prompt(ecg_data, patient, retrieved, severity_result)
+    
+    # Step 4: Generate LLM response
+    try:
+        from respond import generate_llm_response
+        response = generate_llm_response(prompt)
+    except Exception as e:
+        response = f"LLM reasoning unavailable: {e}\n\nSeverity assessment: {severity_result.get('level', 'routine review')}"
     
     return {
-        "level": severity,
-        "evidence": evidence
+        "ecg_data": ecg_data.to_dict(),
+        "patient": patient.to_dict() if patient else {},
+        "severity": severity_result,
+        "guidelines_used": retrieved,
+        "llm_response": response,
+        "full_output": {
+            "observations": response,
+            "triage_support": severity_result.get('level', 'routine review'),
+            "severity_score": severity_result.get('score', 0.5),
+            "evidence": severity_result.get('evidence', []),
+            "explanation": response,
+            "disclaimer": "This is decision-support software and does not replace professional medical evaluation."
+        }
     }
 
 
 def build_clinical_prompt(ecg_data: ECGReportData, 
                           patient: PatientContext,
                           guidelines: List[Dict],
-                          severity_assessment: Dict[str, Any]) -> str:
+                          severity_result: Dict[str, Any]) -> str:
     """Build LLM prompt for clinical reasoning."""
     
     measurements = []
@@ -434,8 +432,10 @@ def build_clinical_prompt(ecg_data: ECGReportData,
     else:
         guideline_text = "No specific guidelines retrieved."
     
-    severity_text = severity_assessment.get('level', 'routine review')
-    evidence_text = "\n".join(f"- {e}" for e in severity_assessment.get('evidence', []))
+    severity_level = severity_result.get('level', 'routine review')
+    severity_score = severity_result.get('score', 0.5)
+    severity_evidence = severity_result.get('evidence', [])
+    evidence_text = "\n".join(f"- {e}" for e in severity_evidence[:5])
     
     return f"""You are CardioAgent, an explainable multimodal clinical decision-support assistant.
 
@@ -453,10 +453,11 @@ CRITICAL RULES:
 === PATIENT CONTEXT ===
 {patient_text}
 
-=== SEVERITY ASSESSMENT ===
-Level: {severity_text}
+=== SEVERITY ASSESSMENT (Data-driven) ===
+Level: {severity_level}
+Score: {severity_score:.2f}
 
-Supporting evidence:
+Contributing factors:
 {evidence_text}
 
 === RETRIEVED GUIDELINES ===
@@ -469,10 +470,7 @@ Generate a structured clinical decision-support response with these sections:
 
 2. **Clinical Significance** - Explain what these findings may mean, in clinical terms. Use cautious language.
 
-3. **Risk / Triage Support** - Based on available evidence, provide a supported level such as:
-   - Routine review
-   - Prompt clinical review
-   - Urgent evaluation may be appropriate
+3. **Risk / Triage Support** - Based on available evidence, provide a supported level.
 
 4. **Red Flags** - List any concerning findings supported by the available evidence.
 
@@ -492,63 +490,3 @@ Keep responses clear, structured, and evidence-grounded.
 Do not invent findings not present in the data.
 Do not make definitive diagnoses.
 """
-
-
-def clinical_report_pipeline(ecg_data: ECGReportData,
-                            patient: PatientContext,
-                            use_rag: bool = True,
-                            rag_store_path: str = "vector_store.pkl") -> Dict[str, Any]:
-    """Complete clinical report pipeline."""
-    
-    # Step 1: Determine severity
-    severity_assessment = determine_severity_from_measurements(ecg_data, patient)
-    
-    # Step 2: Retrieve guidelines (if RAG enabled)
-    retrieved = []
-    if use_rag:
-        try:
-            query_parts = []
-            if ecg_data.heart_rate:
-                query_parts.append(f"heart rate {ecg_data.heart_rate}")
-            if ecg_data.st_segment:
-                query_parts.append(f"ST {ecg_data.st_segment}")
-            if ecg_data.rhythm:
-                query_parts.append(f"rhythm {ecg_data.rhythm}")
-            if ecg_data.abnormalities:
-                query_parts.append(" ".join(ecg_data.abnormalities))
-            if patient and patient.symptoms:
-                query_parts.append(patient.symptoms)
-            
-            query = "ECG " + " ".join(query_parts) if query_parts else "ECG interpretation guidelines"
-            
-            from rag import retrieve
-            raw = retrieve(query, store_path=rag_store_path, top_k=3)
-            retrieved = [{"source": s, "text": t, "score": sc} for s, t, sc in raw]
-        except Exception as e:
-            retrieved = [{"text": f"RAG retrieval unavailable: {e}"}]
-    
-    # Step 3: Build prompt
-    prompt = build_clinical_prompt(ecg_data, patient, retrieved, severity_assessment)
-    
-    # Step 4: Generate LLM response
-    try:
-        from respond import generate_llm_response
-        response = generate_llm_response(prompt)
-    except Exception as e:
-        response = f"LLM reasoning unavailable: {e}\n\nSeverity assessment based on available measurements: {severity_assessment.get('level', 'routine review')}"
-    
-    return {
-        "ecg_data": ecg_data.to_dict(),
-        "patient": patient.to_dict() if patient else {},
-        "severity": severity_assessment,
-        "guidelines_used": retrieved,
-        "llm_response": response,
-        "full_output": {
-            "observations": response,
-            "significance": "Based on available evidence",
-            "triage_support": severity_assessment.get('level', 'routine review'),
-            "red_flags": [e for e in severity_assessment.get('evidence', [])],
-            "explanation": response,
-            "disclaimer": "This is decision-support software and does not replace professional medical evaluation."
-        }
-    }

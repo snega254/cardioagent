@@ -16,4 +16,5 @@ dnspython
 reportlab
 google-genai
 matplotlib
-pytesseract pillow
+pytesseract 
+pillow
