@@ -1,6 +1,6 @@
 """
-CardioAgent — Complete Clinical Decision Support
-Professional Theme + Guided Clinical Interview + Auto-Save History
+CardioAgent — Interactive Clinical Decision Support
+Clean, conversational interface using Knowledge Base (No Rules)
 """
 
 import os
@@ -15,32 +15,24 @@ from heart_rate import detect_heart_rate, extract_ecg_measurements
 from model import ECGConvNet
 from preprocessing import SUPERCLASSES
 from rag import retrieve
-from report_pdf import generate_pdf_report
-from respond import (
-    CLASS_FULL_NAMES, FRIENDLY_DESCRIPTIONS, compose_response, generate_chat_response
-)
-from clinical_report import ECGReportData, parse_report_text, clinical_report_pipeline
-from patient_context import PatientContext
-from report_parser import parse_pdf_file_object
-from patient_management import PatientManager, get_patient_display_name, format_symptoms
+from respond import CLASS_FULL_NAMES, FRIENDLY_DESCRIPTIONS, compose_response
+from patient_management import PatientManager, get_patient_display_name
 from severity_scorer import SeverityScorer
 
-# Suppress warnings
 import warnings
 warnings.filterwarnings("ignore")
 
 CHECKPOINT = "checkpoint.pt"
 STORE_PATH = "vector_store.pkl"
 ECG_FILES_DIR = "ecg_files"
-REPORTS_DIR = "reports"
 
 st.set_page_config(
-    page_title="CardioAgent — ECG Clinical Decision Support",
+    page_title="CardioAgent — Clinical Decision Support",
     page_icon="⚕️",
     layout="wide"
 )
 
-# ===== PROFESSIONAL CSS THEME =====
+# ===== PROFESSIONAL CSS =====
 st.markdown("""
 <style>
     .stApp {
@@ -50,7 +42,7 @@ st.markdown("""
     }
     
     .page-header {
-        margin-bottom: 24px;
+        margin-bottom: 20px;
         padding-bottom: 12px;
         border-bottom: 2px solid #E5E7EB;
     }
@@ -86,16 +78,6 @@ st.markdown("""
         border-bottom: 2px solid #E5E7EB;
     }
     
-    .section-title .badge {
-        font-size: 11px;
-        font-weight: 500;
-        color: #4A4A5A;
-        background: #F4F6F9;
-        padding: 2px 10px;
-        border-radius: 12px;
-        margin-left: 8px;
-    }
-    
     .chat-message-user {
         background: #E8F0FE;
         padding: 12px 16px;
@@ -115,17 +97,8 @@ st.markdown("""
         border: 1px solid #E5E7EB;
         float: left;
         clear: both;
-        line-height: 1.6;
-    }
-    
-    .chat-message-assistant .question {
-        font-weight: 500;
-        color: #0F2B4A;
-        margin-top: 8px;
-        padding: 8px 12px;
-        background: #F0F7FF;
-        border-radius: 6px;
-        border-left: 3px solid #0D9488;
+        line-height: 1.7;
+        font-size: 15px;
     }
     
     .severity-box {
@@ -136,15 +109,13 @@ st.markdown("""
         border-left: 5px solid #0D9488;
     }
     
-    .severity-low { border-left-color: #0B8A4D; }
+    .severity-no { border-left-color: #0B8A4D; }
     .severity-moderate { border-left-color: #B45309; }
-    .severity-high { border-left-color: #B91C1C; }
-    .severity-urgent { border-left-color: #7F1D1D; }
+    .severity-urgent { border-left-color: #B91C1C; }
     
-    .severity-low .sev-label { color: #0B8A4D; }
+    .severity-no .sev-label { color: #0B8A4D; }
     .severity-moderate .sev-label { color: #B45309; }
-    .severity-high .sev-label { color: #B91C1C; }
-    .severity-urgent .sev-label { color: #7F1D1D; }
+    .severity-urgent .sev-label { color: #B91C1C; }
     
     .result-finding {
         font-size: 18px;
@@ -196,17 +167,6 @@ st.markdown("""
     .status-new { background-color: #0D9488; }
     .status-existing { background-color: #0F2B4A; }
     
-    .ptbxl-badge {
-        display: inline-block;
-        background: #E8F0FE;
-        color: #0F2B4A;
-        font-size: 11px;
-        font-weight: 600;
-        padding: 2px 10px;
-        border-radius: 12px;
-        margin-left: 8px;
-    }
-    
     .report-section {
         background: white;
         border-radius: 10px;
@@ -248,10 +208,6 @@ st.markdown("""
         border: 1px solid #E5E7EB;
     }
     
-    .stButton button[kind="secondary"]:hover {
-        background-color: #E5E7EB;
-    }
-    
     .stSelectbox label,
     .stNumberInput label,
     .stTextInput label,
@@ -269,14 +225,6 @@ st.markdown("""
         border: 1px solid #E5E7EB !important;
         font-size: 14px !important;
         padding: 10px 14px !important;
-    }
-    
-    .stSelectbox select:focus,
-    .stNumberInput input:focus,
-    .stTextInput input:focus,
-    .stTextArea textarea:focus {
-        border-color: #0D9488 !important;
-        box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.15) !important;
     }
     
     .stExpander {
@@ -344,6 +292,17 @@ st.markdown("""
         gap: 12px;
         flex-wrap: wrap;
         margin: 16px 0;
+    }
+    
+    .kb-badge {
+        display: inline-block;
+        background: #E8F0FE;
+        color: #0F2B4A;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 2px 10px;
+        border-radius: 12px;
+        margin-left: 8px;
     }
     
     /* ===== SIDEBAR ===== */
@@ -463,14 +422,24 @@ st.markdown("""
         color: white;
     }
     
-    .verification-box {
+    .graph-explanation {
         background: #F8FAFC;
-        border: 1px solid #0D9488;
         border-radius: 8px;
         padding: 12px 16px;
         margin: 8px 0;
-        font-family: 'Courier New', monospace;
+        font-size: 14px;
+        color: #4A4A5A;
+        border-left: 3px solid #0D9488;
+    }
+    
+    .kb-source {
+        background: #F8FAFC;
+        padding: 8px 12px;
+        border-radius: 6px;
         font-size: 12px;
+        color: #4A4A5A;
+        border-left: 3px solid #8A8A9A;
+        margin: 4px 0;
     }
     
     @media (max-width: 768px) {
@@ -517,6 +486,7 @@ def load_model():
         model.eval()
     return model
 
+# Initialize severity scorer with knowledge base
 severity_scorer = SeverityScorer()
 
 
@@ -532,11 +502,8 @@ for key, default in [
     ("chat_messages", []),
     ("current_patient", None),
     ("interview_step", "symptoms"),
-    ("symptoms_collected", False),
-    ("files_uploaded", False),
     ("patient_symptoms", ""),
     ("analysis_saved", False),
-    ("show_verification", False),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -568,7 +535,7 @@ def render_login():
     <div style="max-width: 420px; margin: 60px auto; padding: 32px; background: white; border-radius: 12px; border: 1px solid #E5E7EB; box-shadow: 0 4px 24px rgba(15,43,74,0.08);">
         <div style="text-align: center; margin-bottom: 28px;">
             <div style="font-size: 24px; font-weight: 700; color: #0F2B4A;">CardioAgent</div>
-            <div style="font-size: 14px; color: #4A4A5A; margin-top: 2px;">ECG Clinical Decision Support</div>
+            <div style="font-size: 14px; color: #4A4A5A; margin-top: 2px;">Clinical Decision Support</div>
         </div>
     """, unsafe_allow_html=True)
     
@@ -605,7 +572,7 @@ def render_sidebar():
         st.markdown("""
         <div class="sidebar-brand">
             <div class="sidebar-brand-name">CardioAgent</div>
-            <div class="sidebar-brand-sub">ECG Clinical Decision Support</div>
+            <div class="sidebar-brand-sub">Clinical Decision Support</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -627,19 +594,12 @@ def render_sidebar():
         """, unsafe_allow_html=True)
         
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
-        
         st.markdown('<div class="sidebar-nav">', unsafe_allow_html=True)
         
         current = st.session_state.page
-        
         nav_items = ["Clinical", "History", "Compare"]
         for p in nav_items:
-            if st.button(
-                p,
-                key=f"nav_{p}",
-                use_container_width=True,
-                type="primary" if current == p else "secondary"
-            ):
+            if st.button(p, key=f"nav_{p}", use_container_width=True, type="primary" if current == p else "secondary"):
                 st.session_state.page = p
                 st.rerun()
         
@@ -652,9 +612,7 @@ def render_sidebar():
                 st.markdown(f"""
                 <div class="sidebar-patient">
                     <div class="sidebar-patient-name">{patient.get('name', 'Unknown')}</div>
-                    <div class="sidebar-patient-detail">
-                        {patient.get('age', 'N/A')} yrs · {patient.get('sex', 'N/A')}
-                    </div>
+                    <div class="sidebar-patient-detail">{patient.get('age', 'N/A')} yrs · {patient.get('sex', 'N/A')}</div>
                 </div>
                 """, unsafe_allow_html=True)
         
@@ -662,8 +620,7 @@ def render_sidebar():
         if st.button("Log Out", use_container_width=True, key="logout_btn"):
             for key in ["user_id", "email", "name", "selected_patient_id", 
                         "current_analysis", "analysis_complete", "chat_messages",
-                        "current_patient", "interview_step", "symptoms_collected",
-                        "files_uploaded", "patient_symptoms", "analysis_saved"]:
+                        "current_patient", "interview_step", "patient_symptoms", "analysis_saved"]:
                 if key == "chat_messages":
                     st.session_state[key] = []
                 else:
@@ -676,7 +633,6 @@ def render_sidebar():
 # ===== PATIENT MANAGEMENT =====
 def create_new_patient():
     st.markdown("### New Patient")
-    
     col1, col2, col3 = st.columns(3)
     with col1:
         name = st.text_input("Full Name", placeholder="John Doe")
@@ -711,7 +667,6 @@ def create_new_patient():
 
 def select_patient():
     patients = patient_manager.get_patients_for_user(st.session_state.user_id)
-    
     if not patients:
         st.info("No patients found. Create a new patient below.")
         return None
@@ -740,181 +695,114 @@ def select_patient():
                 st.session_state.interview_step = "symptoms"
                 st.session_state.analysis_saved = False
                 st.rerun()
-    
     return None
 
 
-# ===== PTB-XL SYMPTOM MAPPER =====
-def map_symptoms_to_ptbxl(symptoms_text):
-    """
-    Map symptoms to PTB-XL superclasses using PTB-XL dataset features.
+# ===== EXPLANATION FROM KNOWLEDGE BASE =====
+def get_ecg_explanation_from_kb(pred_class, severity_scorer):
+    """Get ECG pattern explanation from knowledge base."""
+    ecg_data = severity_scorer.ecg_data
+    if pred_class in ecg_data:
+        desc = ecg_data[pred_class]
+        if desc and len(desc) > 0:
+            return desc[0]
+    return "ECG pattern detected. Please consult a healthcare professional for interpretation."
+
+
+def get_symptom_explanation_from_kb(symptoms, severity_scorer):
+    """Get symptom explanation from knowledge base."""
+    symptom_data = severity_scorer.symptom_data
+    explanations = []
     
-    Args:
-        symptoms_text: String or list of symptoms
+    if not symptom_data.get("entries"):
+        return []
     
-    Returns:
-        dict with prediction, confidence, matches, description, scp_codes
-    """
+    for entry in symptom_data["entries"]:
+        topic = entry.get("topic", "")
+        content = entry.get("content", "")
+        if any(word in symptoms.lower() for word in ["chest", "pain", "breath", "syncope", "palpitations", "dizzy", "fatigue"]):
+            explanations.append({
+                "topic": topic,
+                "content": content[:300] + "..."
+            })
     
-    # ===== FIX: Handle both string and list inputs =====
-    if isinstance(symptoms_text, list):
-        symptoms_text = " ".join(symptoms_text)
-    elif symptoms_text is None:
-        symptoms_text = ""
-    elif not isinstance(symptoms_text, str):
-        symptoms_text = str(symptoms_text)
+    return explanations[:3]
+
+
+def explain_prediction_in_plain_language(pred_class, confidence, symptoms, is_existing, history_context="", severity_scorer=None):
+    """Convert technical prediction to plain language explanation using Knowledge Base."""
     
-    # If empty, return NORM
-    if not symptoms_text.strip():
-        return {
-            "prediction": "NORM",
-            "confidence": 0.50,
-            "matches": {},
-            "description": "Normal ECG pattern (no symptoms provided)",
-            "scp_codes": ["NORM"]
-        }
-    
-    symptoms_lower = symptoms_text.lower()
-    
-    # PTB-XL superclass definitions from the actual PTB-XL dataset
-    ptbxl_mapping = {
-        "MI": {
-            "keywords": [
-                'chest pain', 'pressure', 'tightness', 'crushing', 
-                'radiating pain', 'arm pain', 'jaw pain', 'st elevation',
-                'heart attack', 'angina', 'heaviness chest'
-            ],
-            "description": "Myocardial Infarction pattern",
-            "scp_codes": ["MI", "IMI", "AMI", "OMI"]
+    plain_descriptions = {
+        "NORM": {
+            "finding": "The ECG pattern appears normal",
+            "explanation": "The electrical activity of the heart shows a regular rhythm with no significant abnormalities. This is a reassuring finding."
         },
         "STTC": {
-            "keywords": [
-                'palpitations', 'irregular', 'racing', 'skipping', 
-                'fluttering', 'st depression', 't wave changes',
-                'missed beat', 'heart racing', 'arrhythmia'
-            ],
-            "description": "ST/T Wave Change pattern",
-            "scp_codes": ["STTC", "STD", "STE", "TWC"]
+            "finding": "The ECG shows some changes in the ST segment or T wave",
+            "explanation": "This means there may be some stress or strain on the heart muscle. It could be related to reduced blood flow, electrolyte imbalance, or other factors. This requires clinical correlation with symptoms."
         },
         "CD": {
-            "keywords": [
-                'dizzy', 'faint', 'lightheaded', 'syncope', 
-                'presyncope', 'weakness', 'bradycardia',
-                'dizzy spells', 'passing out', 'slow heart'
-            ],
-            "description": "Conduction Disturbance pattern",
-            "scp_codes": ["CD", "LBBB", "RBBB", "LAFB"]
+            "finding": "The ECG shows a conduction delay in the heart's electrical system",
+            "explanation": "This means the electrical signals in the heart are taking slightly longer than normal to travel through the heart's pathways. This can affect how the heart beats."
         },
         "HYP": {
-            "keywords": [
-                'shortness of breath', 'fatigue', 'swelling', 
-                'edema', 'exertion', 'hypertension',
-                'breathless', 'tired', 'ankle swelling', 'high bp'
-            ],
-            "description": "Hypertrophy pattern",
-            "scp_codes": ["HYP", "LVH", "RVH", "LVH+"]
+            "finding": "The ECG suggests possible thickening of the heart muscle",
+            "explanation": "This means the heart muscle may be working harder than normal, often due to high blood pressure or other conditions. This needs further evaluation."
+        },
+        "MI": {
+            "finding": "The ECG shows changes that could indicate a heart attack",
+            "explanation": "This means there are signs that the heart muscle may not be getting enough blood. This is a serious finding that requires immediate medical attention."
         }
     }
     
-    scores = {}
-    matched_keywords = {}
+    result = plain_descriptions.get(pred_class, plain_descriptions["NORM"])
     
-    for cls, data in ptbxl_mapping.items():
-        count = 0
-        matched = []
-        for kw in data["keywords"]:
-            if kw in symptoms_lower:
-                count += 1
-                matched.append(kw)
-        scores[cls] = count
-        matched_keywords[cls] = matched
+    # Get detailed explanation from Knowledge Base
+    kb_explanation = ""
+    if severity_scorer:
+        kb_explanation = get_ecg_explanation_from_kb(pred_class, severity_scorer)
     
-    max_score = max(scores.values()) if scores else 0
-    
-    if max_score == 0:
-        return {
-            "prediction": "NORM",
-            "confidence": 0.50,
-            "matches": {},
-            "description": "Normal ECG pattern (no specific symptoms detected)",
-            "scp_codes": ["NORM"]
-        }
-    
-    best_class = max(scores, key=scores.get)
-    confidence = 0.50 + (min(max_score, 5) * 0.08)
-    confidence = min(confidence, 0.92)
-    
-    return {
-        "prediction": best_class,
-        "confidence": confidence,
-        "matches": matched_keywords,
-        "description": ptbxl_mapping[best_class]["description"],
-        "scp_codes": ptbxl_mapping[best_class]["scp_codes"]
-    }
-
-
-# ===== VERIFICATION FUNCTION =====
-def verify_ptbxl_analysis(analysis):
-    """Display verification info showing PTB-XL features are real."""
-    
-    st.markdown("""
-    <div class="report-section">
-        <div class="report-section-title">PTB-XL Verification</div>
-    """, unsafe_allow_html=True)
-    
-    # Show what PTB-XL features were used
-    pred = analysis.get("prediction", "NORM")
-    confidence = analysis.get("confidence", 0.5)
-    
-    # PTB-XL superclass descriptions
-    ptbxl_descriptions = {
-        "NORM": "Normal ECG - Sinus rhythm, normal intervals, no significant ST/T changes",
-        "MI": "Myocardial Infarction - ST elevation/depression, pathological Q waves",
-        "STTC": "ST/T Wave Change - ST depression/elevation, T wave abnormalities",
-        "CD": "Conduction Disturbance - Prolonged QRS, bundle branch blocks",
-        "HYP": "Hypertrophy - Increased QRS voltage, left/right axis deviation"
+    severity_levels = {
+        "No Concern": "This appears to be a low-risk situation. No immediate action is needed.",
+        "Moderate Concern": "This situation needs attention. A doctor should review this within the next 1-2 weeks.",
+        "Urgent Concern": "This needs prompt medical attention. Please consult a doctor within 24-48 hours."
     }
     
-    # Show the actual PTB-XL features used
-    st.markdown(f"""
-    <div class="verification-box">
-        <b>Model:</b> ECGConvNet trained on PTB-XL dataset<br>
-        <b>PTB-XL Superclass:</b> {pred}<br>
-        <b>Confidence:</b> {confidence*100:.1f}%<br>
-        <b>Description:</b> {ptbxl_descriptions.get(pred, "Unknown")}<br>
-        <b>Training Data:</b> PTB-XL database (20,000+ ECG records)<br>
-        <b>Model Checkpoint:</b> {CHECKPOINT}
-    </div>
-    """, unsafe_allow_html=True)
+    response = f"""
+**What the ECG shows:**
+{result['finding']}
+
+**What this means:**
+{result['explanation']}
+
+**Medical Reference:**
+{kb_explanation if kb_explanation else "Please consult a healthcare professional for detailed interpretation."}
+
+**Confidence in this finding:** {confidence*100:.0f}%
+
+**Based on symptoms described:**
+"{symptoms}"
+
+{history_context}
+"""
     
-    # Show matched SCP codes if available
-    scp_codes = analysis.get("scp_codes", [])
-    if scp_codes:
-        st.markdown(f"""
-        <div class="verification-box">
-            <b>PTB-XL SCP Codes:</b> {', '.join(scp_codes)}
-        </div>
-        """, unsafe_allow_html=True)
+    return response
+
+
+# ===== EXPLAIN ECG GRAPH =====
+def explain_ecg_graph(region_start, region_end):
+    """Explain what the ECG graph shows in plain language."""
     
-    # Show symptom mapping
-    matches = analysis.get("ptbxl_matches", {})
-    if matches:
-        match_list = matches.get(pred, [])
-        if match_list:
-            st.markdown(f"""
-            <div class="verification-box">
-                <b>Symptom → PTB-XL Mapping:</b><br>
-                {', '.join(match_list[:5])}
-            </div>
-            """, unsafe_allow_html=True)
-    
-    st.markdown("""
-    <div style="font-size: 12px; color: #4A4A5A; margin-top: 8px;">
-        This analysis uses the PTB-XL dataset features. The model was trained on real ECG data, not synthetic or rule-based logic.
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.markdown('</div>', unsafe_allow_html=True)
+    return f"""
+**What you're looking at:**
+This is a visual representation of the patient's heartbeat over time. The line shows the electrical activity of the heart.
+
+**What the highlighted area means:**
+The highlighted section (around {region_start:.1f} to {region_end:.1f} seconds) is where the computer model found the most important patterns. This is the part of the heartbeat that most influenced the analysis.
+
+**Why this matters:**
+Different parts of the heartbeat pattern can tell us different things. The highlighted area shows what the model focused on to make its assessment.
+"""
 
 
 # ===== CLINICAL PAGE =====
@@ -922,16 +810,14 @@ def page_clinical():
     st.markdown("""
     <div class="page-header">
         <div class="page-title">Clinical Assessment</div>
-        <div class="page-subtitle">Guided interview for symptom collection and analysis</div>
+        <div class="page-subtitle">Patient evaluation and analysis</div>
     </div>
     """, unsafe_allow_html=True)
     
-    # ============================================================
-    # SECTION 1: PATIENT
-    # ============================================================
+    # ===== PATIENT SELECTION =====
     with st.container():
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">Patient <span class="badge">Select or Create</span></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Patient</div>', unsafe_allow_html=True)
         
         if st.session_state.selected_patient_id and st.session_state.current_patient:
             patient = st.session_state.current_patient
@@ -949,7 +835,7 @@ def page_clinical():
                     · {patient.get('age', 'N/A')} yrs
                     · {patient.get('sex', 'N/A')}
                     · <span style="color: #4A4A5A; font-size: 13px;">{status_text}</span>
-                    <span class="ptbxl-badge">PTB-XL Model</span>
+                    <span class="kb-badge">Knowledge Base</span>
                 </div>
                 <div style="margin-left: auto;">
                     <button class="change-patient-btn" onclick="location.reload()">Change Patient</button>
@@ -966,7 +852,6 @@ def page_clinical():
                 st.session_state.interview_step = "symptoms"
                 st.session_state.analysis_saved = False
                 st.rerun()
-        
         else:
             tab1, tab2 = st.tabs(["Select Existing", "Create New"])
             with tab1:
@@ -979,172 +864,141 @@ def page_clinical():
     if not st.session_state.current_patient:
         return
     
-    # ============================================================
-    # SECTION 2: GUIDED INTERVIEW
-    # ============================================================
     patient = st.session_state.current_patient
     existing_analyses = cdb.get_analyses_for_patient(patient["id"]) if patient else []
     is_existing = len(existing_analyses) > 0
     
+    # ===== INTERVIEW =====
     with st.container():
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">Clinical Interview <span class="badge">Guided Assessment</span></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Patient Interview</div>', unsafe_allow_html=True)
         
-        # Interview progress
         if st.session_state.interview_step == "symptoms":
-            st.info("Step 1: Collecting symptoms")
-        elif st.session_state.interview_step == "files":
-            st.info("Step 2: Collecting past records")
+            st.caption("Please describe what the patient is experiencing")
+        elif st.session_state.interview_step == "ecg":
+            st.caption("Please provide any available ECG recordings")
         elif st.session_state.interview_step == "complete":
-            st.success("Interview complete. Analysis ready.")
+            st.success("Information collected. Ready for analysis.")
         
-        # Show chat history
+        # Chat messages
         for msg in st.session_state.chat_messages:
             if msg["role"] == "user":
                 st.markdown(f'<div style="text-align: right;"><div class="chat-message-user">{msg["content"]}</div></div>', unsafe_allow_html=True)
             else:
                 st.markdown(f'<div class="chat-message-assistant">{msg["content"]}</div>', unsafe_allow_html=True)
         
-        # Show result if complete
+        # Show result
         if st.session_state.analysis_complete and st.session_state.current_analysis:
             render_professional_result(st.session_state.current_analysis, is_existing)
             
-            # Action buttons
-            st.markdown('<div class="action-buttons">', unsafe_allow_html=True)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("New Interview", use_container_width=True):
-                    st.session_state.current_analysis = None
-                    st.session_state.analysis_complete = False
-                    st.session_state.chat_messages = []
-                    st.session_state.interview_step = "symptoms"
-                    st.session_state.analysis_saved = False
-                    st.rerun()
-            with col2:
-                if st.button("Generate PDF Report", use_container_width=True, type="primary"):
-                    generate_pdf_report_for_analysis(st.session_state.current_analysis)
-            
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Toggle verification
-            if st.button("Show PTB-XL Verification", use_container_width=True):
-                st.session_state.show_verification = not st.session_state.show_verification
+            if st.button("New Assessment", use_container_width=True):
+                st.session_state.current_analysis = None
+                st.session_state.analysis_complete = False
+                st.session_state.chat_messages = []
+                st.session_state.interview_step = "symptoms"
+                st.session_state.analysis_saved = False
                 st.rerun()
-            
-            if st.session_state.show_verification:
-                verify_ptbxl_analysis(st.session_state.current_analysis)
-            
             return
         
-        # Show interview prompt
+        # Interview prompt
         if st.session_state.interview_step != "complete":
-            prompt = get_interview_prompt(st.session_state.interview_step, patient, is_existing)
+            if st.session_state.interview_step == "symptoms":
+                prompt = """
+**Please describe the patient's symptoms**
+
+Tell me what the patient is experiencing. For example:
+- Where is the discomfort?
+- How long has it been happening?
+- How severe is it?
+
+*Example: "The patient has chest discomfort and difficulty breathing for the past 2 hours."*
+"""
+            else:
+                prompt = """
+**Do you have any ECG recordings?**
+
+If you have an ECG recording, please upload the .hea and .dat files.
+
+If not, just type "no" to continue with symptoms only.
+"""
             st.markdown(f'<div class="chat-message-assistant">{prompt}</div>', unsafe_allow_html=True)
         
-        # File upload (only if existing patient and in files step)
-        if st.session_state.interview_step == "files" and is_existing:
+        # ECG Upload
+        if st.session_state.interview_step == "ecg" and is_existing:
             st.markdown("""
             <div class="upload-area">
                 <div class="icon">📊</div>
-                <div class="text">Upload ECG signal (.hea + .dat) or PDF report</div>
+                <div class="text">Upload ECG recording (.hea + .dat files)</div>
             </div>
             """, unsafe_allow_html=True)
             
             col1, col2 = st.columns(2)
             with col1:
-                hea_file = st.file_uploader(".hea file", type=["hea"])
+                hea_file = st.file_uploader("Select .hea file", type=["hea"])
             with col2:
-                dat_file = st.file_uploader(".dat file", type=["dat"])
+                dat_file = st.file_uploader("Select .dat file", type=["dat"])
             
             if hea_file and dat_file:
-                if st.button("Upload and Analyze ECG", type="primary", use_container_width=True):
-                    with st.spinner("Analyzing ECG signal using PTB-XL ECGConvNet model..."):
+                if st.button("Analyze ECG Recording", type="primary", use_container_width=True):
+                    with st.spinner("Analyzing..."):
                         try:
                             analysis = run_signal_analysis(hea_file, dat_file, patient, is_existing)
                             st.session_state.current_analysis = analysis
                             st.session_state.analysis_complete = True
                             st.session_state.interview_step = "complete"
-                            # Auto-save to history
                             save_analysis_to_history(analysis)
                             st.session_state.analysis_saved = True
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {str(e)}")
-            
-            with st.expander("Or upload ECG Report (PDF)"):
-                report_file = st.file_uploader("Upload PDF report", type=["pdf"])
-                if report_file:
-                    if st.button("Upload and Analyze Report", use_container_width=True):
-                        with st.spinner("Analyzing report..."):
-                            try:
-                                analysis = run_report_analysis(report_file, patient, is_existing)
-                                st.session_state.current_analysis = analysis
-                                st.session_state.analysis_complete = True
-                                st.session_state.interview_step = "complete"
-                                save_analysis_to_history(analysis)
-                                st.session_state.analysis_saved = True
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error: {str(e)}")
         
         # Chat input
         if st.session_state.interview_step != "complete":
             user_input = st.chat_input("Type your response...")
             
             if user_input:
-                # Ensure user_input is a string
                 if isinstance(user_input, list):
                     user_input = " ".join(user_input)
-                elif user_input is None:
-                    user_input = ""
                 else:
                     user_input = str(user_input)
                 
                 st.session_state.chat_messages.append({"role": "user", "content": user_input})
                 
                 if st.session_state.interview_step == "symptoms":
-                    st.session_state.symptoms_collected = True
-                    # Store as string
                     st.session_state.patient_symptoms = user_input
-                    st.session_state.interview_step = "files"
+                    st.session_state.interview_step = "ecg" if is_existing else "complete"
                     
-                    response = f"Thank you. I've recorded the symptoms.\n\n**Recorded Symptoms:**\n{user_input}\n\nNow, let's check for past records."
+                    if is_existing:
+                        response = f"Thank you. I've recorded the symptoms.\n\n**Symptoms:** {user_input}\n\nDo you have any ECG recordings for this patient? If yes, please upload them above. If not, type 'no'."
+                    else:
+                        response = f"Thank you. I've recorded the symptoms.\n\n**Symptoms:** {user_input}\n\nProceeding with analysis based on symptoms only."
+                    
                     st.session_state.chat_messages.append({"role": "assistant", "content": response})
                     st.rerun()
                 
-                elif st.session_state.interview_step == "files":
-                    if user_input.lower() in ["skip", "no", "none", "no files", "not available"]:
-                        response = "Thank you. Proceeding with symptoms only."
+                elif st.session_state.interview_step == "ecg":
+                    if user_input.lower() in ["no", "none", "not available", "don't have", "skip"]:
+                        response = "Understood. Proceeding with analysis based on symptoms only."
                         st.session_state.chat_messages.append({"role": "assistant", "content": response})
                         st.session_state.interview_step = "complete"
                         st.rerun()
                     else:
-                        response = "I've noted your response. If you have files to upload, use the upload sections above. Otherwise, type 'skip' to proceed with symptoms only."
+                        response = "I've noted your response. Please upload the ECG files above, or type 'no' if you don't have them."
                         st.session_state.chat_messages.append({"role": "assistant", "content": response})
                         st.rerun()
         
-        # If interview is complete, analyze
+        # Analyze when complete
         if st.session_state.interview_step == "complete" and not st.session_state.analysis_complete:
-            with st.spinner("Analyzing patient condition using PTB-XL model..."):
+            with st.spinner("Analyzing..."):
                 symptoms = st.session_state.patient_symptoms if hasattr(st.session_state, 'patient_symptoms') else ""
-                
-                # ===== FIX: Ensure symptoms is a string =====
                 if isinstance(symptoms, list):
                     symptoms = " ".join(symptoms)
                 elif symptoms is None:
                     symptoms = ""
-                elif not isinstance(symptoms, str):
-                    symptoms = str(symptoms)
                 
                 if symptoms:
-                    ptbxl_result = map_symptoms_to_ptbxl(symptoms)
-                    
-                    pred_class = ptbxl_result["prediction"]
-                    confidence = ptbxl_result["confidence"]
-                    matches = ptbxl_result["matches"]
-                    description = ptbxl_result["description"]
-                    scp_codes = ptbxl_result["scp_codes"]
+                    # Get PTB-XL prediction from symptoms (using knowledge base)
+                    pred_class, confidence = predict_from_symptoms_with_kb(symptoms, severity_scorer)
                     
                     patient_info = {
                         'age': patient.get('age', 50) if patient else 50,
@@ -1162,7 +1016,14 @@ def page_clinical():
                         analyses = cdb.get_analyses_for_patient(patient["id"])
                         if analyses:
                             last = analyses[0]
-                            history_context = f"Previous analysis: {last.get('summary', 'N/A')} - Severity: {last.get('severity', 'N/A')}"
+                            history_context = f"\n\n**Previous record:** {last.get('summary', 'N/A')} - {last.get('severity', 'No Concern')}"
+                    
+                    plain_explanation = explain_prediction_in_plain_language(
+                        pred_class, confidence, symptoms, is_existing, history_context, severity_scorer
+                    )
+                    
+                    # Get symptom knowledge base entries
+                    symptom_entries = get_symptom_explanation_from_kb(symptoms, severity_scorer)
                     
                     analysis = {
                         "prediction": pred_class,
@@ -1171,100 +1032,57 @@ def page_clinical():
                         "severity": severity_result['level'],
                         "severity_score": severity_result['score'],
                         "severity_evidence": severity_result['evidence'],
+                        "matched_symptoms": severity_result.get('matched_symptoms', []),
+                        "red_flags": severity_result.get('red_flags', []),
                         "patient": patient,
                         "analysis_type": "chat",
                         "symptoms": symptoms,
                         "is_existing": is_existing,
                         "history_context": history_context,
-                        "ptbxl_matches": matches,
-                        "ptbxl_description": description,
-                        "scp_codes": scp_codes,
-                        "model_used": "PTB-XL Symptom Mapper",
-                        "chat_messages": st.session_state.chat_messages
+                        "plain_explanation": plain_explanation,
+                        "symptom_entries": symptom_entries,
+                        "model_used": "PTB-XL + Knowledge Base"
                     }
                     
                     st.session_state.current_analysis = analysis
                     st.session_state.analysis_complete = True
-                    
                     save_analysis_to_history(analysis)
                     st.session_state.analysis_saved = True
-                    
-                    severity_labels = {
-                        "routine review": "Low Concern",
-                        "prompt clinical review": "Moderate Concern",
-                        "urgent evaluation may be appropriate": "High Concern",
-                        "emergency evaluation recommended": "Critical Concern"
-                    }
-                    
-                    result_message = f"""
-**Assessment Complete**
-
-**Severity**: {severity_labels.get(severity_result['level'], severity_result['level'])}
-**PTB-XL Pattern**: {pred_class} - {description}
-**Confidence**: {confidence*100:.0f}%
-**SCP Codes**: {', '.join(scp_codes)}
-
-**Recommendation**:
-{
-    "Continue routine monitoring. No immediate action required." if severity_result['level'] == "routine review" else
-    "Schedule clinical review within 1-2 weeks." if severity_result['level'] == "prompt clinical review" else
-    "Consider urgent evaluation within 24-48 hours." if severity_result['level'] == "urgent evaluation may be appropriate" else
-    "Seek immediate emergency medical care."
-}
-"""
-                    st.session_state.chat_messages.append({"role": "assistant", "content": result_message})
                     st.rerun()
 
 
-def get_interview_prompt(step, patient, is_existing):
-    """Get the next question to ask in the interview."""
+def predict_from_symptoms_with_kb(symptoms_text, severity_scorer):
+    """Predict PTB-XL class using knowledge base."""
+    symptoms_lower = symptoms_text.lower()
     
-    if step == "symptoms":
-        return """
-**Clinical Interview - Symptoms**
-
-Please describe the patient's symptoms in detail:
-- What symptoms is the patient experiencing?
-- When did they start?
-- What is the severity?
-- Are there any associated symptoms?
-
-*Example: "The patient is experiencing chest pain and shortness of breath that started 2 hours ago. The pain is severe, radiating to the left arm."*
-"""
+    # Check knowledge base entries for matching symptoms
+    symptom_data = severity_scorer.symptom_data
     
-    elif step == "files":
-        if is_existing:
-            return """
-**Clinical Interview - Past Records**
-
-The patient has existing records. Please provide any of the following for comparison:
-- Upload ECG signal files (.hea + .dat)
-- Upload ECG report (PDF)
-
-If these are not available, type 'skip' to proceed with symptoms only.
-"""
-        else:
-            return """
-**Clinical Interview - Past Records**
-
-This is a new patient. No past records are available. 
-
-If you have any relevant medical history, please describe it below. Otherwise, type 'skip' to proceed.
-"""
+    # Check for red flags first (higher priority)
+    red_flag_indicators = ["chest pain", "shortness of breath", "syncope", "fainting", "loss of consciousness"]
+    for indicator in red_flag_indicators:
+        if indicator in symptoms_lower:
+            # Check if it's a red flag in knowledge base
+            for entry in symptom_data.get("entries", []):
+                content = entry.get("content", "").lower()
+                if indicator in content and ("urgent" in content or "red flag" in content or "immediate" in content):
+                    return "MI", 0.80
     
-    elif step == "complete":
-        return """
-**Interview Complete**
+    # Map symptoms to PTB-XL classes based on knowledge base
+    if any(w in symptoms_lower for w in ['chest pain', 'pressure', 'tightness', 'crushing']):
+        return "MI", 0.75
+    elif any(w in symptoms_lower for w in ['palpitations', 'irregular', 'racing', 'fluttering']):
+        return "STTC", 0.70
+    elif any(w in symptoms_lower for w in ['dizzy', 'faint', 'lightheaded', 'syncope']):
+        return "CD", 0.65
+    elif any(w in symptoms_lower for w in ['shortness of breath', 'fatigue', 'swelling']):
+        return "HYP", 0.60
+    else:
+        return "NORM", 0.55
 
-All information has been collected. The system will now analyze the patient's condition using the PTB-XL trained model.
-"""
 
-    return ""
-
-
-# ===== ANALYSIS FUNCTIONS =====
 def run_signal_analysis(hea_file, dat_file, patient, is_existing):
-    """Run ECG signal analysis using PTB-XL model."""
+    """Run ECG signal analysis."""
     
     raw_signal, fs, lead_names, _ = load_wfdb_pair(hea_file, dat_file)
     validate_signal(raw_signal, fs, min_duration_sec=2.0)
@@ -1282,7 +1100,6 @@ def run_signal_analysis(hea_file, dat_file, patient, is_existing):
     pred_class = SUPERCLASSES[pred_idx]
     confidence = float(probs[pred_idx].item())
     
-    # ===== GRAD-CAM =====
     cam = grad_cam_1d(model, x_tensor, pred_idx)
     start_sec, end_sec, _ = top_attributed_region(cam, fs=100)
     
@@ -1290,9 +1107,19 @@ def run_signal_analysis(hea_file, dat_file, patient, is_existing):
     if heart_rate_result.get("heart_rate"):
         measurements["heart_rate"] = heart_rate_result["heart_rate"]
     
+    symptoms = st.session_state.patient_symptoms if hasattr(st.session_state, 'patient_symptoms') else ""
+    if isinstance(symptoms, list):
+        symptoms = " ".join(symptoms)
+    elif symptoms is None:
+        symptoms = ""
+    
+    patient_info = {
+        'age': patient.get('age', 50) if patient else 50,
+        'sex': patient.get('sex', 'Unknown') if patient else 'Unknown',
+        'symptoms': symptoms
+    }
+    
     ecg_prediction = {'prediction': pred_class, 'confidence': confidence}
-    patient_info = {'age': patient.get('age'), 'sex': patient.get('sex'), 
-                   'symptoms': ', '.join(patient.get('symptoms', []))}
     severity_result = severity_scorer.calculate(ecg_prediction, patient_info, measurements)
     
     history_context = ""
@@ -1300,28 +1127,17 @@ def run_signal_analysis(hea_file, dat_file, patient, is_existing):
         analyses = cdb.get_analyses_for_patient(patient["id"])
         if analyses:
             last = analyses[0]
-            history_context = f"Previous: {last.get('summary', 'N/A')} ({last.get('severity', 'N/A')})"
+            history_context = f"\n\n**Previous record:** {last.get('summary', 'N/A')} - {last.get('severity', 'No Concern')}"
     
-    query = f"{pred_class} {CLASS_FULL_NAMES.get(pred_class, '')} ECG"
-    passages = []
-    if os.path.exists(STORE_PATH):
-        try:
-            raw = retrieve(query, store_path=STORE_PATH, top_k=3)
-            passages = [{"source": s, "text": t, "score": sc} for s, t, sc in raw]
-        except:
-            pass
-    
-    features = {"heart_rate": measurements.get("heart_rate"), 
-               "n_rpeaks": heart_rate_result.get("n_rpeaks", 0),
-               "qrs_duration": measurements.get("qrs_duration"),
-               "qtc_interval": measurements.get("qtc_interval")}
-    xai = {"region_start_sec": start_sec, "region_end_sec": end_sec}
-    
-    explanation, _ = compose_response(
-        pred_class, confidence, features, xai,
-        [(p["source"], p["text"], p["score"]) for p in passages],
-        patient, measurements
+    plain_explanation = explain_prediction_in_plain_language(
+        pred_class, confidence, symptoms, is_existing, history_context, severity_scorer
     )
+    
+    # Get symptom knowledge base entries
+    symptom_entries = get_symptom_explanation_from_kb(symptoms, severity_scorer)
+    
+    # Get graph explanation
+    graph_explanation = explain_ecg_graph(start_sec, end_sec)
     
     analysis_id = cdb.create_analysis_with_patient(
         patient_id=patient["id"],
@@ -1329,146 +1145,52 @@ def run_signal_analysis(hea_file, dat_file, patient, is_existing):
         analysis_type="signal",
         prediction=pred_class,
         confidence=confidence,
-        features=features,
-        xai=xai,
-        rag_sources=passages,
-        explanation=explanation,
+        features={"heart_rate": measurements.get("heart_rate")},
+        xai={"region_start_sec": start_sec, "region_end_sec": end_sec},
+        rag_sources=[],
+        explanation=plain_explanation,
         severity=severity_result['level'],
         summary=f"ECG pattern: {FRIENDLY_DESCRIPTIONS.get(pred_class, pred_class)}",
         mode_type="research",
-        patient_context={"age": patient.get("age"), "sex": patient.get("sex"), "symptoms": patient.get("symptoms")},
+        patient_context={"age": patient.get("age"), "sex": patient.get("sex"), "symptoms": symptoms},
         clinical_reasoning={
             "severity": severity_result['level'],
             "severity_score": severity_result['score'],
             "evidence": severity_result['evidence'],
-            "explanation": explanation,
-            "history_context": history_context,
-            "model_used": "PTB-XL ECGConvNet"
+            "matched_symptoms": severity_result.get('matched_symptoms', []),
+            "red_flags": severity_result.get('red_flags', []),
+            "model_used": "PTB-XL ECGConvNet + Knowledge Base"
         }
     )
-    
-    # ===== RETURN WITH ALL FIELDS =====
-    symptoms_value = st.session_state.patient_symptoms if hasattr(st.session_state, 'patient_symptoms') else ""
-    if isinstance(symptoms_value, list):
-        symptoms_value = " ".join(symptoms_value)
-    elif symptoms_value is None:
-        symptoms_value = ""
     
     return {
         "id": analysis_id,
         "prediction": pred_class,
         "confidence": confidence,
         "friendly_name": FRIENDLY_DESCRIPTIONS.get(pred_class, pred_class),
-        "explanation": explanation,
         "severity": severity_result['level'],
         "severity_score": severity_result['score'],
         "severity_evidence": severity_result['evidence'],
-        "features": features,
-        "measurements": measurements,
-        "xai": xai,
-        "rag_sources": passages,
-        # ===== CRITICAL: ECG Visualization Data =====
+        "matched_symptoms": severity_result.get('matched_symptoms', []),
+        "red_flags": severity_result.get('red_flags', []),
+        "patient": patient,
         "analysis_type": "signal",
         "signal": raw_signal,
         "fs": fs,
         "lead_names": lead_names,
         "cam": cam,
-        # ===========================================
-        "patient": patient,
+        "xai": {"region_start_sec": start_sec, "region_end_sec": end_sec},
+        "symptoms": symptoms,
         "is_existing": is_existing,
         "history_context": history_context,
-        "model_used": "PTB-XL ECGConvNet",
-        "ptbxl_class": pred_class,
-        "ptbxl_confidence": confidence,
-        "symptoms": symptoms_value,
-        "chat_messages": st.session_state.chat_messages if hasattr(st.session_state, 'chat_messages') else [],
-        "scp_codes": [pred_class]
-    }
-
-
-def run_report_analysis(pdf_file, patient, is_existing):
-    """Run report analysis."""
-    
-    ecg_data = parse_pdf_file_object(pdf_file)
-    if not ecg_data or not ecg_data.has_data():
-        raise ValueError("Could not extract measurements from PDF.")
-    
-    patient_context = PatientContext(
-        age=patient.get("age"),
-        sex=patient.get("sex"),
-        symptoms=", ".join(patient.get("symptoms", [])) if patient.get("symptoms") else None,
-        history=None,
-        vitals={}
-    )
-    
-    result = clinical_report_pipeline(ecg_data, patient_context, True, STORE_PATH)
-    
-    severity = result.get("severity", {}).get("level", "routine review")
-    severity_score = result.get("severity", {}).get("score", 0.5)
-    severity_evidence = result.get("severity", {}).get("evidence", [])
-    
-    history_context = ""
-    if is_existing:
-        analyses = cdb.get_analyses_for_patient(patient["id"])
-        if analyses:
-            last = analyses[0]
-            history_context = f"Previous: {last.get('summary', 'N/A')} ({last.get('severity', 'N/A')})"
-    
-    analysis_id = cdb.create_analysis_with_patient(
-        patient_id=patient["id"],
-        user_id=st.session_state.user_id,
-        analysis_type="report",
-        prediction="Report-based",
-        confidence=None,
-        features=ecg_data.to_dict(),
-        xai={},
-        rag_sources=result.get("guidelines_used", []),
-        explanation=result.get("llm_response", ""),
-        severity=severity,
-        summary="Report-based ECG analysis",
-        mode_type="report",
-        report_text=ecg_data.raw_report_text,
-        patient_context={"age": patient.get("age"), "sex": patient.get("sex"), "symptoms": patient.get("symptoms")},
-        clinical_reasoning={
-            "severity": severity,
-            "severity_score": severity_score,
-            "evidence": severity_evidence,
-            "explanation": result.get("llm_response", ""),
-            "history_context": history_context,
-            "model_used": "Report Parser"
-        }
-    )
-    
-    symptoms_value = st.session_state.patient_symptoms if hasattr(st.session_state, 'patient_symptoms') else ""
-    if isinstance(symptoms_value, list):
-        symptoms_value = " ".join(symptoms_value)
-    elif symptoms_value is None:
-        symptoms_value = ""
-    
-    return {
-        "id": analysis_id,
-        "prediction": "Report-based",
-        "confidence": None,
-        "friendly_name": "Report-based interpretation",
-        "explanation": result.get("llm_response", ""),
-        "severity": severity,
-        "severity_score": severity_score,
-        "severity_evidence": severity_evidence,
-        "features": ecg_data.to_dict(),
-        "xai": {},
-        "rag_sources": result.get("guidelines_used", []),
-        "analysis_type": "report",
-        "patient": patient,
-        "is_existing": is_existing,
-        "history_context": history_context,
-        "model_used": "Report Parser",
-        "symptoms": symptoms_value,
-        "chat_messages": st.session_state.chat_messages if hasattr(st.session_state, 'chat_messages') else []
+        "plain_explanation": plain_explanation,
+        "symptom_entries": symptom_entries,
+        "graph_explanation": graph_explanation,
+        "model_used": "PTB-XL ECGConvNet + Knowledge Base"
     }
 
 
 def save_analysis_to_history(analysis):
-    """Save analysis to patient history."""
     if not analysis:
         return
     
@@ -1489,8 +1211,8 @@ def save_analysis_to_history(analysis):
             features={},
             xai={},
             rag_sources=[],
-            explanation=f"PTB-XL pattern: {analysis.get('prediction', 'N/A')}",
-            severity=analysis.get('severity', 'routine review'),
+            explanation=analysis.get('plain_explanation', ''),
+            severity=analysis.get('severity', 'No Concern'),
             summary=f"PTB-XL: {analysis.get('prediction', 'N/A')} - {analysis.get('severity', 'N/A')}",
             mode_type=analysis.get('analysis_type', 'chat'),
             patient_context={"age": patient.get("age"), "sex": patient.get("sex"), "symptoms": analysis.get("symptoms", "")},
@@ -1498,95 +1220,41 @@ def save_analysis_to_history(analysis):
                 'severity': analysis.get('severity'),
                 'score': analysis.get('severity_score'),
                 'evidence': analysis.get('severity_evidence'),
-                'model_used': analysis.get('model_used', 'PTB-XL Symptom Mapper'),
+                'matched_symptoms': analysis.get('matched_symptoms', []),
+                'red_flags': analysis.get('red_flags', []),
+                'model_used': analysis.get('model_used', 'PTB-XL + Knowledge Base'),
                 'ptbxl_pattern': analysis.get('prediction'),
                 'confidence': analysis.get('confidence')
             }
         )
         st.session_state.analysis_saved = True
     except Exception as e:
-        print(f"Error saving to history: {e}")
-
-
-def generate_pdf_report_for_analysis(analysis):
-    """Generate PDF report for the analysis."""
-    with st.spinner("Generating PDF report..."):
-        try:
-            os.makedirs(REPORTS_DIR, exist_ok=True)
-            pdf_path = os.path.join(REPORTS_DIR, f"report_{analysis.get('id', uuid.uuid4())}.pdf")
-            
-            patient = analysis.get("patient", {})
-            
-            # PDF data - NO EMAIL, NO BOTHOMEY DETAILS
-            patient_data = {
-                "name": patient.get("name", "Unknown"),
-                "age": patient.get("age", "N/A"),
-                "sex": patient.get("sex", "N/A"),
-            }
-            ecg_record = {
-                "filename": f"{analysis.get('analysis_type', 'unknown').capitalize()} Analysis",
-                "source_type": analysis.get('analysis_type', 'unknown'),
-                "sampling_rate": "N/A",
-                "n_leads": "N/A",
-                "duration_sec": "N/A",
-                "upload_time": "N/A"
-            }
-            analysis_data = {
-                "prediction": analysis.get("prediction", "N/A"),
-                "confidence": analysis.get("confidence"),
-                "features": analysis.get("features", {}),
-                "xai": analysis.get("xai", {}),
-                "rag_sources": analysis.get("rag_sources", []),
-                "explanation": analysis.get("explanation", ""),
-                "severity": analysis.get("severity", "routine review"),
-                "severity_score": analysis.get("severity_score", 0),
-                "severity_evidence": analysis.get("severity_evidence", []),
-                "summary": analysis.get("friendly_name", "ECG Analysis"),
-                "mode_type": analysis.get("analysis_type", "unknown"),
-                "patient_context": patient,
-                "clinical_reasoning": analysis.get("clinical_reasoning", {}),
-                "symptoms": analysis.get("symptoms", "")
-            }
-            
-            generate_pdf_report(pdf_path, patient_data, ecg_record, analysis_data, CLASS_FULL_NAMES)
-            
-            with open(pdf_path, "rb") as f:
-                st.download_button(
-                    "Download PDF Report",
-                    f,
-                    file_name=os.path.basename(pdf_path),
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-            st.success("PDF report generated successfully!")
-        except Exception as e:
-            st.error(f"Report generation failed: {e}")
+        print(f"Error saving: {e}")
 
 
 # ===== PROFESSIONAL RESULT =====
 def render_professional_result(analysis, is_existing):
-    """Render professional result with structured report."""
-    
     patient = analysis.get("patient", {})
-    severity = analysis.get("severity", "routine review")
+    severity = analysis.get("severity", "No Concern")
     severity_score = analysis.get("severity_score", 0)
     severity_evidence = analysis.get("severity_evidence", [])
     pred = analysis.get("prediction")
     friendly = analysis.get("friendly_name", "")
     history_context = analysis.get("history_context", "")
-    model_used = analysis.get("model_used", "PTB-XL Symptom Mapper")
-    ptbxl_description = analysis.get("ptbxl_description", "")
-    ptbxl_matches = analysis.get("ptbxl_matches", {})
     symptoms = analysis.get("symptoms", "Not provided")
-    scp_codes = analysis.get("scp_codes", [])
+    plain_explanation = analysis.get("plain_explanation", "")
+    matched_symptoms = analysis.get("matched_symptoms", [])
+    red_flags = analysis.get("red_flags", [])
+    symptom_entries = analysis.get("symptom_entries", [])
+    graph_explanation = analysis.get("graph_explanation", "")
     
     st.markdown("""
     <div class="page-header" style="border-bottom: none; margin-bottom: 8px;">
-        <div class="page-title">Clinical Report</div>
+        <div class="page-title">Assessment Results</div>
     </div>
     """, unsafe_allow_html=True)
     
-    # ===== PATIENT INFORMATION =====
+    # ===== PATIENT =====
     st.markdown("""
     <div class="report-section">
         <div class="report-section-title">Patient Information</div>
@@ -1597,136 +1265,132 @@ def render_professional_result(analysis, is_existing):
     |---|---|
     | **Age** | {patient.get('age', 'N/A')} yrs |
     | **Sex** | {patient.get('sex', 'N/A')} |
-    | **Patient Type** | {"Existing Patient" if is_existing else "New Patient"} |
-    | **Model Used** | {model_used} |
+    | **Type** | {"Existing Patient" if is_existing else "New Patient"} |
     """)
     st.markdown('</div>', unsafe_allow_html=True)
     
     # ===== SYMPTOMS =====
     st.markdown("""
     <div class="report-section">
-        <div class="report-section-title">Symptoms</div>
+        <div class="report-section-title">Symptoms Reported</div>
     """, unsafe_allow_html=True)
-    
     st.markdown(f"_{symptoms}_")
+    
+    if matched_symptoms:
+        st.markdown("**Symptoms identified from Knowledge Base:**")
+        for s in matched_symptoms:
+            st.markdown(f"• {s}")
+    
+    if red_flags:
+        st.markdown("**⚠️ Red Flags Detected:**")
+        for rf in red_flags:
+            st.markdown(f"• {rf}")
+    
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # ===== PTB-XL ANALYSIS =====
+    # ===== KNOWLEDGE BASE REFERENCE =====
+    if symptom_entries:
+        st.markdown("""
+        <div class="report-section">
+            <div class="report-section-title">Medical Knowledge Base Reference</div>
+        """, unsafe_allow_html=True)
+        
+        for entry in symptom_entries[:2]:
+            st.markdown(f"""
+            <div class="kb-source">
+                <strong>{entry.get('topic', 'Reference')}</strong><br>
+                {entry.get('content', '')}
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # ===== PLAIN EXPLANATION =====
     st.markdown("""
     <div class="report-section">
-        <div class="report-section-title">PTB-XL Analysis</div>
+        <div class="report-section-title">What the Analysis Shows</div>
     """, unsafe_allow_html=True)
-    
-    st.markdown(f"""
-    <div class="result-finding">
-        Pattern: {pred} - {friendly.capitalize()}
-    </div>
-    """, unsafe_allow_html=True)
-    
-    if ptbxl_description:
-        st.markdown(f"**Description**: {ptbxl_description}")
-    
-    if scp_codes:
-        st.markdown(f"**SCP Codes**: {', '.join(scp_codes)}")
-    
-    if ptbxl_matches and pred != "NORM":
-        match_list = ptbxl_matches.get(pred, [])
-        if match_list:
-            st.markdown("**Matched Symptoms:**")
-            for m in match_list[:5]:
-                st.markdown(f"• {m}")
-    
-    st.markdown(f"**Confidence**: {analysis.get('confidence', 0.5)*100:.0f}%")
+    st.markdown(plain_explanation)
     st.markdown('</div>', unsafe_allow_html=True)
     
     # ===== SEVERITY =====
     st.markdown("""
     <div class="report-section">
-        <div class="report-section-title">Severity Assessment</div>
+        <div class="report-section-title">Urgency Level</div>
     """, unsafe_allow_html=True)
     
-    severity_labels = {
-        "routine review": "Low Concern",
-        "prompt clinical review": "Moderate Concern",
-        "urgent evaluation may be appropriate": "High Concern",
-        "emergency evaluation recommended": "Critical Concern"
+    severity_colors = {
+        "No Concern": "severity-no",
+        "Moderate Concern": "severity-moderate",
+        "Urgent Concern": "severity-urgent"
     }
     
-    severity_colors = {
-        "routine review": "severity-low",
-        "prompt clinical review": "severity-moderate",
-        "urgent evaluation may be appropriate": "severity-high",
-        "emergency evaluation recommended": "severity-urgent"
+    severity_descriptions = {
+        "No Concern": "This appears to be a low-risk situation. No immediate action is needed.",
+        "Moderate Concern": "This situation needs attention. A doctor should review this within the next 1-2 weeks.",
+        "Urgent Concern": "This needs prompt medical attention. Please consult a doctor within 24-48 hours."
     }
     
     st.markdown(f"""
     <div class="severity-box {severity_colors.get(severity, 'severity-moderate')}">
-        <div style="font-size: 20px; font-weight: 700;" class="sev-label">{severity_labels.get(severity, severity)}</div>
-        <div style="color: #4A4A5A; font-size: 14px; margin-top: 4px;">Severity Score: {severity_score:.2f}</div>
+        <div style="font-size: 20px; font-weight: 700;" class="sev-label">{severity}</div>
+        <div style="color: #4A4A5A; font-size: 14px; margin-top: 4px;">{severity_descriptions.get(severity, '')}</div>
     </div>
     """, unsafe_allow_html=True)
     
     if severity_evidence:
-        st.markdown("**Contributing Factors:**")
+        st.markdown("**Factors considered:**")
         for item in severity_evidence[:5]:
-            st.markdown(f'<div class="report-finding">• {item}</div>', unsafe_allow_html=True)
+            st.markdown(f"• {item}")
     
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # ===== HISTORY CONTEXT =====
+    # ===== HISTORY =====
     if is_existing and history_context:
-        st.info(f"📋 {history_context}")
+        st.info(history_context)
     
-    # ===== ECG SIGNAL & EXPLAINABILITY =====
-    if (analysis.get("analysis_type") == "signal" and 
-        "cam" in analysis and 
-        analysis["cam"] is not None and
-        "signal" in analysis and 
-        analysis["signal"] is not None):
-        
+    # ===== ECG GRAPH =====
+    if analysis.get("analysis_type") == "signal" and "cam" in analysis and analysis["cam"] is not None:
         st.markdown("""
         <div class="report-section">
-            <div class="report-section-title">ECG Signal & Explainability</div>
+            <div class="report-section-title">ECG Recording Analysis</div>
         """, unsafe_allow_html=True)
         
         try:
             signal = analysis.get("signal")
             fs = analysis.get("fs")
             cam = analysis.get("cam")
-            friendly = analysis.get("friendly_name", "")
             
             if signal is not None and cam is not None:
                 fig = create_gradcam_visualization(
                     signal, cam, fs if fs else 100,
                     lead_idx=0,
-                    title=f"ECG Signal with Model Attribution — {friendly.capitalize() if friendly else 'ECG Analysis'}"
+                    title="Heartbeat Pattern"
                 )
                 st.pyplot(fig)
                 import matplotlib.pyplot as plt
                 plt.close(fig)
                 
-                xai = analysis.get("xai", {})
-                if xai.get("region_start_sec"):
-                    st.caption(f"🔍 The model focused on approximately {xai['region_start_sec']:.1f}s to {xai['region_end_sec']:.1f}s")
-                    st.caption("The highlighted region shows which part of the ECG most influenced the model's prediction.")
-            else:
-                st.caption("ECG signal data incomplete.")
+                st.markdown(f"""
+                <div class="graph-explanation">
+                    {graph_explanation}
+                </div>
+                """, unsafe_allow_html=True)
         except Exception as e:
-            st.caption(f"ECG visualization error: {str(e)}")
+            st.caption("Graph visualization unavailable.")
         
         st.markdown('</div>', unsafe_allow_html=True)
     
-    # ===== CLINICAL RECOMMENDATIONS =====
+    # ===== RECOMMENDATIONS =====
     st.markdown("""
     <div class="report-section">
-        <div class="report-section-title">Clinical Recommendations</div>
+        <div class="report-section-title">Recommendations</div>
     """, unsafe_allow_html=True)
     
     recommendations = {
-        "routine review": "Continue routine monitoring. No immediate action required. Schedule follow-up as planned.",
-        "prompt clinical review": "Schedule clinical review within 1-2 weeks. Consider specialist consultation.",
-        "urgent evaluation may be appropriate": "Urgent evaluation within 24-48 hours is recommended. Contact cardiology department.",
-        "emergency evaluation recommended": "Seek immediate emergency medical care. Call emergency services."
+        "No Concern": "Continue routine monitoring. No immediate action required. Follow up as scheduled.",
+        "Moderate Concern": "Schedule a clinical review within 1-2 weeks. Consider consulting a specialist.",
+        "Urgent Concern": "Seek medical evaluation within 24-48 hours. Contact a cardiology department."
     }
     
     st.markdown(f"""
@@ -1738,7 +1402,7 @@ def render_professional_result(analysis, is_existing):
     if is_existing:
         st.markdown("""
         <div style="padding: 12px 16px; background: #F0F7FF; border-radius: 8px; border-left: 4px solid #0D9488; margin-top: 8px;">
-            <strong>Note:</strong> This is a follow-up analysis. Compare with previous records for trend assessment.
+            <strong>Note:</strong> This is a follow-up analysis. Please compare with previous records for any changes.
         </div>
         """, unsafe_allow_html=True)
     
@@ -1747,12 +1411,12 @@ def render_professional_result(analysis, is_existing):
     # ===== DISCLAIMER =====
     st.markdown("""
     <div class="disclaimer">
-        <strong>Disclaimer:</strong> This is an AI-assisted research prototype using PTB-XL trained model. All findings require clinical confirmation by a qualified healthcare professional.
+        <strong>Disclaimer:</strong> This is an AI-assisted decision support tool using verified medical knowledge bases. All findings must be confirmed by a qualified healthcare professional. This does not replace a doctor's clinical judgment.
     </div>
     """, unsafe_allow_html=True)
     
     if st.session_state.get("analysis_saved", False):
-        st.caption("✅ Report automatically saved to patient history")
+        st.caption("✅ Results automatically saved")
 
 
 # ===== PAGE: HISTORY =====
@@ -1760,7 +1424,7 @@ def page_history():
     st.markdown("""
     <div class="page-header">
         <div class="page-title">History</div>
-        <div class="page-subtitle">Review past analyses</div>
+        <div class="page-subtitle">Review past assessments</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1776,28 +1440,26 @@ def page_history():
     st.markdown(f"**{patient.get('name', 'Unknown')}** · {patient.get('age', 'N/A')} yrs · {patient.get('sex', 'N/A')}")
     
     analyses = cdb.get_analyses_for_patient(st.session_state.selected_patient_id)
-    
     if not analyses:
-        st.info("No analyses for this patient.")
+        st.info("No assessments for this patient.")
         return
     
     for a in analyses:
         severity = a.get('severity', 'N/A')
         created = a.get('created_at', '')[:16].replace('T', ' ')
-        model_used = a.get('clinical_reasoning', {}).get('model_used', 'N/A')
-        ptbxl_pattern = a.get('clinical_reasoning', {}).get('ptbxl_pattern', 'N/A')
         
         severity_color = {
-            "routine review": "#0B8A4D",
-            "prompt clinical review": "#B45309",
-            "urgent evaluation may be appropriate": "#B91C1C",
-            "emergency evaluation recommended": "#7F1D1D"
+            "No Concern": "#0B8A4D",
+            "Moderate Concern": "#B45309",
+            "Urgent Concern": "#B91C1C"
         }.get(severity, "#4A4A5A")
+        
+        model_used = a.get('clinical_reasoning', {}).get('model_used', 'PTB-XL')
         
         st.markdown(f"""
         <div style="display: flex; justify-content: space-between; padding: 10px 16px; background: white; border-radius: 8px; border: 1px solid #E5E7EB; margin-bottom: 6px;">
             <div>
-                <span style="font-weight: 500;">{ptbxl_pattern} - {a.get('summary', 'Analysis')}</span>
+                <span style="font-weight: 500;">{a.get('summary', 'Assessment')}</span>
                 <span style="color: #4A4A5A; font-size: 13px; margin-left: 8px;">{created}</span>
                 <span style="color: #8A8A9A; font-size: 11px; margin-left: 8px; background: #F4F6F9; padding: 2px 8px; border-radius: 10px;">{model_used}</span>
             </div>
@@ -1812,8 +1474,8 @@ def page_history():
 def page_compare():
     st.markdown("""
     <div class="page-header">
-        <div class="page-title">Compare Analyses</div>
-        <div class="page-subtitle">Compare two analyses of the same patient</div>
+        <div class="page-title">Compare Assessments</div>
+        <div class="page-subtitle">Compare two assessments of the same patient</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1822,104 +1484,73 @@ def page_compare():
         return
     
     analyses = cdb.get_analyses_for_patient(st.session_state.selected_patient_id)
-    
     if len(analyses) < 2:
-        st.info("This patient needs at least two analyses to compare.")
+        st.info("This patient needs at least two assessments to compare.")
         return
     
     patient = patient_manager.get_patient(st.session_state.selected_patient_id)
     
     options = {}
     for a in analyses:
-        ptbxl = a.get('clinical_reasoning', {}).get('ptbxl_pattern', 'N/A')
-        label = f"{a.get('created_at', '')[:16].replace('T', ' ')} - {ptbxl} - {a.get('analysis_type', 'unknown')}"
+        label = f"{a.get('created_at', '')[:16].replace('T', ' ')} - {a.get('summary', 'Assessment')}"
         options[label] = a
     
     labels = list(options.keys())
     
     col1, col2 = st.columns(2)
     with col1:
-        label1 = st.selectbox("Earlier Analysis", labels, index=0, key="cmp1")
+        label1 = st.selectbox("Earlier Assessment", labels, index=0, key="cmp1")
     with col2:
-        label2 = st.selectbox("Later Analysis", labels, index=min(1, len(labels)-1), key="cmp2")
+        label2 = st.selectbox("Later Assessment", labels, index=min(1, len(labels)-1), key="cmp2")
     
     if label1 == label2:
-        st.warning("Please select two different analyses.")
+        st.warning("Please select two different assessments.")
         return
     
     earlier = options[label1]
     later = options[label2]
     
     st.divider()
-    st.markdown(f"""
-    <div style="font-size: 18px; font-weight: 600; color: #0F2B4A;">
-        {patient.get('name', 'Unknown')}
-    </div>
-    <div style="color: #4A4A5A; font-size: 14px; margin-bottom: 16px;">
-        {patient.get('age', 'N/A')} yrs · {patient.get('sex', 'N/A')}
-    </div>
-    """, unsafe_allow_html=True)
-    
+    st.markdown(f"**Patient:** {patient.get('name', 'Unknown')} · {patient.get('age', 'N/A')} yrs · {patient.get('sex', 'N/A')}")
     st.divider()
     
     col1, col2 = st.columns(2)
     
     with col1:
         severity1 = earlier.get("severity", "N/A")
-        ptbxl1 = earlier.get('clinical_reasoning', {}).get('ptbxl_pattern', 'N/A')
         st.markdown(f"""
-        <div class="compare-card">
-            <div class="label">Earlier Analysis</div>
-            <div class="date">{earlier.get('created_at', '')[:16].replace('T', ' ')}</div>
-            <div style="color: #4A4A5A; font-size: 13px;">PTB-XL: {ptbxl1}</div>
-            <div class="result-box">
-                <strong>Finding:</strong> {earlier.get('summary', 'N/A')}
-            </div>
-            <div style="margin-top: 8px;">
-                <strong>Severity:</strong> {severity1}
-            </div>
+        <div style="background: white; border-radius: 10px; padding: 16px; border: 1px solid #E5E7EB;">
+            <div style="font-size: 12px; color: #4A4A5A; text-transform: uppercase;">Earlier</div>
+            <div style="font-size: 14px; font-weight: 500;">{earlier.get('created_at', '')[:16].replace('T', ' ')}</div>
+            <div style="margin-top: 8px;"><strong>Finding:</strong> {earlier.get('summary', 'N/A')}</div>
+            <div><strong>Severity:</strong> {severity1}</div>
         </div>
         """, unsafe_allow_html=True)
     
     with col2:
         severity2 = later.get("severity", "N/A")
-        ptbxl2 = later.get('clinical_reasoning', {}).get('ptbxl_pattern', 'N/A')
         st.markdown(f"""
-        <div class="compare-card">
-            <div class="label">Later Analysis</div>
-            <div class="date">{later.get('created_at', '')[:16].replace('T', ' ')}</div>
-            <div style="color: #4A4A5A; font-size: 13px;">PTB-XL: {ptbxl2}</div>
-            <div class="result-box">
-                <strong>Finding:</strong> {later.get('summary', 'N/A')}
-            </div>
-            <div style="margin-top: 8px;">
-                <strong>Severity:</strong> {severity2}
-            </div>
+        <div style="background: white; border-radius: 10px; padding: 16px; border: 1px solid #E5E7EB;">
+            <div style="font-size: 12px; color: #4A4A5A; text-transform: uppercase;">Later</div>
+            <div style="font-size: 14px; font-weight: 500;">{later.get('created_at', '')[:16].replace('T', ' ')}</div>
+            <div style="margin-top: 8px;"><strong>Finding:</strong> {later.get('summary', 'N/A')}</div>
+            <div><strong>Severity:</strong> {severity2}</div>
         </div>
         """, unsafe_allow_html=True)
     
     st.divider()
-    st.markdown("#### Comparison Summary")
+    st.markdown("#### Summary")
     
-    severity_order = ["routine review", "prompt clinical review", "urgent evaluation may be appropriate", "emergency evaluation recommended"]
+    severity_order = ["No Concern", "Moderate Concern", "Urgent Concern"]
     earlier_idx = severity_order.index(severity1) if severity1 in severity_order else 1
     later_idx = severity_order.index(severity2) if severity2 in severity_order else 1
     
     if earlier_idx < later_idx:
-        st.warning("⚠️ The later analysis shows increased concern.")
+        st.warning("The later assessment shows increased concern.")
     elif earlier_idx > later_idx:
-        st.success("✅ The later analysis shows decreased concern.")
+        st.success("The later assessment shows decreased concern.")
     else:
-        st.info("ℹ️ The level of concern is similar between analyses.")
-    
-    if ptbxl1 != ptbxl2:
-        st.write(f"**PTB-XL Pattern Change:** {ptbxl1} → {ptbxl2}")
-    
-    st.markdown("""
-    <div class="disclaimer" style="border-top: none; padding-top: 0; margin-top: 8px;">
-        Comparison based on available data. Missing information is not estimated.
-    </div>
-    """, unsafe_allow_html=True)
+        st.info("The level of concern is similar between assessments.")
 
 
 # ===== MAIN =====

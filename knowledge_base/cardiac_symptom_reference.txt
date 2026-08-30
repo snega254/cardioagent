@@ -1,0 +1,136 @@
+CARDIOLOGY SYMPTOM KNOWLEDGE BASE — VERIFIED ENTRIES ONLY
+============================================================
+Every claim below was checked against the cited source via web
+search on the date this file was generated. Unverifiable content
+(including invented triage-level groupings) has been removed.
+Content is paraphrased in original wording, not quoted verbatim,
+per copyright limits — verify exact wording against the source
+before using in any publication.
+============================================================
+
+ENTRY_ID: chest_pain_001
+TOPIC: Chest Pain — Cardiac Red Flags
+SOURCES:
+  - Merck Manual Professional Edition, "Chest Pain" (Cardiology)
+    https://www.merckmanuals.com/professional/cardiovascular-disorders/symptoms-of-cardiovascular-disorders/chest-pain
+  - UCSF Hospital Handbook, "Diagnosis of Suspected ACS"
+    https://hospitalhandbook.ucsf.edu/02-diagnosis-suspected-acs/02-diagnosis-suspected-acs
+---
+VERIFIED_CONTENT:
+Red flag findings associated with dangerous causes of chest pain
+include abnormal vital signs (tachycardia, bradycardia, tachypnea,
+hypotension), signs of hypoperfusion (confusion, ashen color,
+diaphoresis), shortness of breath, and new heart murmurs (Merck
+Manual).
+
+Features that make acute coronary syndrome (ACS) more likely
+include: radiation to both arms, radiation to the left or right
+arm, radiation to the neck or jaw, pain similar to prior ischemic
+episodes, worsening with exertion, associated diaphoresis, or
+associated dyspnea. Pain that is pleuritic or associated with
+syncope makes ACS less likely, though these features alone cannot
+reliably rule ACS in or out (UCSF Hospital Handbook).
+
+RELEVANT_ECG_CHECK (per source):
+New ECG changes such as ST elevation/depression or new left bundle
+branch block are listed as red flags requiring urgent evaluation.
+
+============================================================
+
+ENTRY_ID: syncope_001
+TOPIC: Syncope — Cardiac Red Flags
+SOURCE: Merck Manual Professional Edition, "Syncope" (Cardiology)
+https://www.merckmanuals.com/professional/cardiovascular-disorders/symptoms-of-cardiovascular-disorders/syncope
+---
+VERIFIED_CONTENT:
+Syncope with exertion suggests cardiac outflow obstruction or
+exercise-induced arrhythmia; such patients sometimes also have
+chest pain, palpitations, or both.
+
+Syncope that begins and ends suddenly and spontaneously is typical
+of cardiac causes, most commonly an arrhythmia. Syncope occurring
+while lying down also suggests an arrhythmia, because vasovagal
+and orthostatic mechanisms do not typically cause syncope in the
+recumbent position.
+
+Family history should note the presence, at a young age, of heart
+disease or sudden death in any family member. A family history of
+sudden unexpected death, exertional syncope, or unexplained
+recurrent syncope or seizures is noted as important, since the
+occasional life-threatening cause (e.g., tachyarrhythmia, heart
+block) carries a risk of sudden death.
+
+============================================================
+
+ENTRY_ID: palpitations_001
+TOPIC: Palpitations — Associated Symptoms and Risk
+SOURCE: Merck Manual Professional Edition, "Palpitations" (Cardiology)
+https://www.merckmanuals.com/professional/cardiovascular-disorders/symptoms-of-cardiovascular-disorders/palpitations
+---
+VERIFIED_CONTENT:
+Important associated symptoms to ask about alongside palpitations
+include syncope, light-headedness, tunnel vision, dyspnea, and
+chest pain.
+
+Bradyarrhythmias, tachyarrhythmias, and heart blocks can be
+unpredictable and may adversely affect cardiac output, causing
+hypotension or death; ventricular tachycardia sometimes degenerates
+into ventricular fibrillation.
+
+Asking the patient to tap out the rate and cadence of the
+palpitations (rather than relying on verbal description alone) can
+help suggest a diagnosis — for example, an irregular "missed beat"
+pattern suggests atrial or ventricular extrasystoles, while a rapid,
+totally irregular pattern suggests atrial fibrillation.
+
+============================================================
+
+ENTRY_ID: dyspnea_001
+TOPIC: Dyspnea — Cardiac (Heart Failure) Pattern
+SOURCES:
+  - Merck Manual Professional Edition, "Chronic Heart Failure"
+    https://www.merckmanuals.com/professional/cardiovascular-disorders/heart-failure/chronic-heart-failure
+  - Merck Manual Consumer Version, "Shortness of Breath"
+    https://www.merckmanuals.com/home/lung-and-airway-disorders/symptoms-of-lung-disorders/shortness-of-breath
+---
+VERIFIED_CONTENT:
+In earlier or milder heart failure, dyspnea occurs with varying
+degrees of exertion. As heart failure worsens, dyspnea can occur
+during rest and at night, sometimes causing nocturnal cough.
+Dyspnea occurring immediately or soon after lying flat, and
+relieved promptly by sitting up (orthopnea), is common as heart
+failure advances.
+
+In paroxysmal nocturnal dyspnea, dyspnea awakens the patient several
+hours after lying down and is relieved only after sitting up for
+15–20 minutes; this is described as an extreme form of orthopnea
+and a sign of severe heart failure.
+
+============================================================
+
+ENTRY_ID: edema_001
+TOPIC: Peripheral Edema — Cardiac (Heart Failure) Pattern
+SOURCES:
+  - Merck Manual Professional Edition, "Right Heart Failure and Cor
+    Pulmonale"
+    https://www.merckmanuals.com/professional/cardiovascular-disorders/heart-failure/right-heart-failure-and-cor-pulmonale
+  - Merck Manual Professional Edition, "Chronic Heart Failure"
+    https://www.merckmanuals.com/professional/cardiovascular-disorders/heart-failure/chronic-heart-failure
+  - Merck Manual Professional Edition, "Edema" (Cardiology)
+    https://www.merckmanuals.com/professional/cardiovascular-disorders/symptoms-of-cardiovascular-disorders/edema
+---
+VERIFIED_CONTENT:
+In right ventricular failure, the most common symptoms are
+peripheral edema and fatigue. Findings can include peripheral
+edema, neck vein distention, and hepatomegaly. In severe heart
+failure, peripheral edema can extend to the thighs or higher;
+severe edema in multiple areas is termed anasarca.
+
+Common chronic heart failure symptoms include exertional dyspnea,
+exercise intolerance, and peripheral edema (particularly in the
+ankles and feet).
+
+For a patient presenting with edema, the review of systems should
+include checking for exertional dyspnea, orthopnea, and paroxysmal
+nocturnal dyspnea as possible signs pointing to a heart failure
+cause; sudden onset of edema should trigger prompt evaluation.
